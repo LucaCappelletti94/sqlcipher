@@ -1191,6 +1191,34 @@ do_test migrate-failure {
 db close
 file delete -force test.db 
 
+# test original database is left untouched after
+# a failed migration after handle is closed
+do_test migrate-failure-closed {
+  file copy -force $sampleDir/sqlcipher-3.0-testkey.db test.db
+  sqlite_orig db test.db
+
+  set rc {}
+
+  lappend rc [execsql {
+    PRAGMA key = 'testkey';
+    PRAGMA cipher_test_on = fail_migrate_closed;
+    PRAGMA cipher_migrate;
+  }]
+  db close
+  
+  lappend rc [file exists test.db-migrated]
+
+  sqlite_orig db test.db
+  lappend rc [execsql {
+    PRAGMA key = 'testkey';
+    PRAGMA cipher_test_off = fail_migrate_closed;
+    PRAGMA cipher_compatibility = 3;
+    SELECT count(*) FROM sqlite_schema;
+  }]
+} {{ok 1} 0 {ok 1}}
+db close
+file delete -force test.db 
+
 # if a migration failes the database should be in a permanent error state
 do_test migrate-failure-not-readable {
   file copy -force $sampleDir/sqlcipher-3.0-testkey.db test.db

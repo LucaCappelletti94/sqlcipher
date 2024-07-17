@@ -3969,11 +3969,7 @@ static int walWriteOneFrame(
   int rc;                         /* Result code from subfunctions */
   void *pData;                    /* Data actually written */
   u8 aFrame[WAL_FRAME_HDRSIZE];   /* Buffer to assemble frame-header in */
-#if defined(SQLITE_HAS_CODEC)
-  if( (pData = sqlcipherPagerCodec(pPage))==0 ) return SQLITE_NOMEM_BKPT;
-#else
   pData = pPage->pData;
-#endif
   walEncodeFrame(p->pWal, pPage->pgno, nTruncate, pData, aFrame);
   rc = walWriteToLog(p, aFrame, sizeof(aFrame), iOffset);
   if( rc ) return rc;
@@ -4158,11 +4154,7 @@ static int walFrames(
         if( pWal->iReCksum==0 || iWrite<pWal->iReCksum ){
           pWal->iReCksum = iWrite;
         }
-#if defined(SQLITE_HAS_CODEC)
-        if( (pData = sqlcipherPagerCodec(p))==0 ) return SQLITE_NOMEM;
-#else
         pData = p->pData;
-#endif
         rc = sqlite3OsWrite(pWal->pWalFd, pData, szPage, iOff);
         if( rc ) return rc;
         p->flags &= ~PGHDR_WAL_APPEND;

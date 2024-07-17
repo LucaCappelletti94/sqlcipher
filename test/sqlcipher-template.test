@@ -3,7 +3,7 @@
 # sjlombardo at zetetic dot net
 # http://zetetic.net
 #
-# Copyright (c) 2018, ZETETIC LLC
+# Copyright (c) 2025, ZETETIC LLC
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
 #     * Redistributions of source code must retain the above copyright
@@ -34,8 +34,8 @@
 # should explicitly close and open db with sqlite_orig in order
 # to bypass default key assignment.
 
-#set testdir [file dirname $argv0]
-#source $testdir/tester.tcl
-#source $testdir/sqlcipher.tcl
+set testdir [file dirname $argv0]
+source $testdir/tester.tcl
+source $testdir/sqlcipher.tcl
 
-#finish_test
+finish_test

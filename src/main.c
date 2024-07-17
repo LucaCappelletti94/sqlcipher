@@ -3350,47 +3350,6 @@ static const char *uriParameter(const char *zFilename, const char *zParam){
   return 0;
 }
 
-/* BEGIN SQLCIPHER */
-#if defined(SQLITE_HAS_CODEC)
-/* Process URI filename query parameters relevant to SQLCipher
- * Return the result of the keying operation, with seen being
- * set to true if the query parameter is present, and false if not
-*/
-int sqlite3CodecQueryParameters (
-  sqlite3 *db,           /* Database connection */
-  const char *zDb,       /* Which schema is being created/attached */
-  const char *zUri,       /* URI filename */
-  int *seen
-){
-  const char *zKey;
-
-  if( zUri==0 ){
-    if(seen) *seen = 0;
-  }else if( (zKey = uriParameter(zUri, "hexkey"))!=0 && zKey[0] ){
-    u8 iByte;
-    int i;
-    char zDecoded[40];
-    if(seen) *seen = 1;
-    for(i=0, iByte=0; i<sizeof(zDecoded)*2 && sqlite3Isxdigit(zKey[i]); i++){
-      iByte = (iByte<<4) + sqlite3HexToInt(zKey[i]);
-      if( (i&1)!=0 ) zDecoded[i/2] = iByte;
-    }
-    return sqlite3_key_v2(db, zDb, zDecoded, i/2);
-  }else if( (zKey = uriParameter(zUri, "key"))!=0 ){
-    if(seen) *seen = 1;
-    return sqlite3_key_v2(db, zDb, zKey, sqlite3Strlen30(zKey));
-  }else if( (zKey = uriParameter(zUri, "textkey"))!=0 ){
-    if(seen) *seen = 1;
-    return sqlite3_key_v2(db, zDb, zKey, -1);
-  }else{
-    if(seen) *seen = 0;
-  }
-  return SQLITE_OK;
-}
-#endif
-/* END SQLCIPHER */
-
-
 /*
 ** This routine does the work of opening a database on behalf of
 ** sqlite3_open() and sqlite3_open16(). The database filename "zFilename" 
@@ -3753,7 +3712,8 @@ opendb_out:
 /* BEGIN SQLCIPHER */
 #if defined(SQLITE_HAS_CODEC)
   if( rc==SQLITE_OK ){
-    if((rc = sqlite3CodecQueryParameters(db, 0, zOpen, 0)) != SQLITE_OK) {
+    extern int sqlcipher_query_parameters (sqlite3 *, const char*, const char*, int *);
+    if((rc = sqlcipher_query_parameters(db, 0, zOpen, NULL)) != SQLITE_OK) {
       sqlite3Error(db, rc);
       db->eOpenState = SQLITE_STATE_SICK;
     }

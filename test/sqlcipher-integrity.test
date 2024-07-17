@@ -150,7 +150,6 @@ do_test hmac-tamper-resistence {
     PRAGMA key = 'testkey';
     SELECT count(*) FROM t1;
   }
-
 } {1 {database disk image is malformed}}
 db close
 file delete -force test.db
@@ -188,17 +187,29 @@ do_test integrity-check-clean-database {
 db close
 file delete -force test.db
 
+# try cipher_integrity_check on a plaintext
+# database which should fail because the file doesn't exist 
+do_test plaintext-integrity-check-should-fail {
+  sqlite_orig db test.db
+  execsql {
+    CREATE TABLE t1(a,b);
+    INSERT INTO t1(a,b) values (1,2);
+    PRAGMA cipher_integrity_check;
+  } 
+} {{not an encrypted database}}
+db close
+file delete -force test.db
+
 # try cipher_integrity_check on an in-memory database
 # which should fail because the file doesn't exist
 do_test memory-integrity-check-should-fail {
   sqlite_orig db :memory:
   execsql {
-    PRAGMA key = 'testkey';
     CREATE TABLE t1(a,b);
     INSERT INTO t1(a,b) values (1,2);
     PRAGMA cipher_integrity_check;
   } 
-} {ok {database file is undefined}}
+} {{not an encrypted database}}
 db close
 
 # try cipher_integrity_check on a valid 1.1.8 database
@@ -239,7 +250,7 @@ do_test version-2-integrity-check-invalid {
     PRAGMA cipher_compatibility = 2;
     PRAGMA cipher_integrity_check;
   } 
-} {ok {HMAC verification failed for page 9} {HMAC verification failed for page 11}}
+} {ok {Verification failed for page 9} {Verification failed for page 11}}
 db close
 file delete -force test.db
 
@@ -267,7 +278,7 @@ do_test version-3-integrity-check-invalid {
     PRAGMA cipher_compatibility = 3;
     PRAGMA cipher_integrity_check;
   } 
-} {ok {HMAC verification failed for page 9} {HMAC verification failed for page 11}}
+} {ok {Verification failed for page 9} {Verification failed for page 11}}
 db close
 file delete -force test.db
 
@@ -297,7 +308,7 @@ do_test version-4-integrity-check-invalid {
     PRAGMA key = 'testkey';
     PRAGMA cipher_integrity_check;
   } 
-} {ok {HMAC verification failed for page 2} {HMAC verification failed for page 3} {HMAC verification failed for page 4}}
+} {ok {Verification failed for page 2} {Verification failed for page 3} {Verification failed for page 4}}
 db close
 file delete -force test.db
 
@@ -338,7 +349,7 @@ do_test integrity-check-plaintext-header {
   lappend rc [execsql {
     PRAGMA cipher_integrity_check;
   }]
-} {{} 1 {{HMAC verification failed for page 1} {HMAC verification failed for page 2}}}
+} {{} 1 {{Verification failed for page 1} {Verification failed for page 2}}}
 db close
 file delete -force test.db
 

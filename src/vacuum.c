@@ -257,21 +257,6 @@ SQLITE_NOINLINE int sqlite3RunVacuum(
     }
   }
 
-  /* A VACUUM cannot change the pagesize of an encrypted database. */
-/* BEGIN SQLCIPHER */
-#ifdef SQLITE_HAS_CODEC
-  if( db->nextPagesize ){
-    extern void sqlcipherCodecGetKey(sqlite3*, int, void**, int*);
-    extern void sqlcipher_free(void*, sqlite3_uint64);
-    int nKey;
-    char *zKey;
-    sqlcipherCodecGetKey(db, iDb, (void**)&zKey, &nKey);
-    if( nKey ) db->nextPagesize = 0;
-    if(nKey) sqlcipher_free(zKey, nKey);
-  }
-#endif
-/* END SQLCIPHER */
-
   sqlite3BtreeSetCacheSize(pTemp, db->aDb[iDb].pSchema->cache_size);
   sqlite3BtreeSetSpillSize(pTemp, sqlite3BtreeSetSpillSize(pMain,0));
   sqlite3BtreeSetPagerFlags(pTemp, pgflags|PAGER_CACHESPILL);

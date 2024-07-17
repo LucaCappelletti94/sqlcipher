@@ -42,13 +42,6 @@ file delete -force test2.db
 file delete -force test3.db
 file delete -force test4.db
 
-# If the library is not compiled with has_codec support then
-# skip all tests in this file.
-if {![sqlite_orig -has-codec]} {
-  finish_test
-  return
-}
-
 proc setup {file key} {
   sqlite_orig db $file
   execsql "PRAGMA key=$key;"

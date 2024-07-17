@@ -94,10 +94,11 @@ struct sqlcipher_provider {
 int sqlcipher_extra_init(const char*);
 void sqlcipher_extra_shutdown(void);
 void sqlcipher_init_memmethods(void);
-int sqlcipher_codec_pragma(sqlite3*, int, Parse*, const char *, const char*);
-int sqlcipherCodecAttach(sqlite3*, int, const void *, int);
-void sqlcipherCodecGetKey(sqlite3*, int, void**, int*);
+int sqlcipher_pragma(sqlite3*, const char*, int, Parse*, const char *, const char*);
+int sqlcipher_db_attach(sqlite3*, int, const void *, int);
+void sqlcipher_db_get_key(sqlite3*, int, void**, int*);
 int sqlcipher_find_db_index(sqlite3 *, const char *);
+int sqlcipher_query_parameters (sqlite3 *, const char*, const char*, int*);
 
 /* utility functions */
 void* sqlcipher_memset(void *, unsigned char, sqlite_uint64);
@@ -111,6 +112,9 @@ char* sqlcipher_version(void);
 int sqlcipher_register_provider(sqlcipher_provider *);
 sqlcipher_provider* sqlcipher_get_provider(void);
 
+/* vfs registration/re-registration */
+int sqlcipher_register_vfs(void);
+
 #define SQLCIPHER_MUTEX_PROVIDER          0
 #define SQLCIPHER_MUTEX_PROVIDER_ACTIVATE 1
 #define SQLCIPHER_MUTEX_PROVIDER_RAND     2
@@ -119,7 +123,8 @@ sqlcipher_provider* sqlcipher_get_provider(void);
 #define SQLCIPHER_MUTEX_RESERVED3         5
 #define SQLCIPHER_MUTEX_MEM               6
 #define SQLCIPHER_MUTEX_SHAREDCACHE       7
-#define SQLCIPHER_MUTEX_COUNT             8
+#define SQLCIPHER_MUTEX_VFS               8
+#define SQLCIPHER_MUTEX_COUNT             9
 
 sqlite3_mutex* sqlcipher_mutex(int);
 
@@ -136,6 +141,7 @@ sqlite3_mutex* sqlcipher_mutex(int);
 #define SQLCIPHER_LOG_MEMORY        (1<<1)
 #define SQLCIPHER_LOG_MUTEX         (1<<2)
 #define SQLCIPHER_LOG_PROVIDER      (1<<3)
+#define SQLCIPHER_LOG_VFS           (1<<4)
 
 #ifdef SQLCIPHER_OMIT_LOG
 #define sqlcipher_log(level, source, message, ...)
@@ -143,8 +149,8 @@ sqlite3_mutex* sqlcipher_mutex(int);
 void sqlcipher_log(unsigned int level, unsigned int source, const char *message, ...);
 #endif
 
-#ifdef CODEC_DEBUG_PAGEDATA
-#define CODEC_HEXDUMP(DESC,BUFFER,LEN)  \
+#ifdef SQLCIPHER_DEBUG_PAGEDATA
+#define SQLCIPHER_HEXDUMP(DESC,BUFFER,LEN)  \
   { \
     int __pctr; \
     printf(DESC); \
@@ -156,7 +162,7 @@ void sqlcipher_log(unsigned int level, unsigned int source, const char *message,
     fflush(stdout); \
   }
 #else
-#define CODEC_HEXDUMP(DESC,BUFFER,LEN)
+#define SQLCIPHER_HEXDUMP(DESC,BUFFER,LEN)
 #endif
 
 #endif

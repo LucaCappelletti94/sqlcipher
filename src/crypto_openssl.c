@@ -61,21 +61,21 @@ static unsigned int openssl_init_count = 0;
 static void sqlcipher_openssl_log_errors() {
     unsigned long err = 0;
     while((err = ERR_get_error()) != 0) {
-      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_log_errors: ERR_get_error() returned %lx: %s", err, ERR_error_string(err, NULL));
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: ERR_get_error() returned %lx: %s", __func__, err, ERR_error_string(err, NULL));
     }
 }
 
 static int sqlcipher_openssl_add_random(void *ctx, const void *buffer, int length) {
 #ifndef SQLCIPHER_OPENSSL_NO_MUTEX_RAND
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "sqlcipher_openssl_add_random: entering SQLCIPHER_MUTEX_PROVIDER_RAND");
+  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: entering SQLCIPHER_MUTEX_PROVIDER_RAND", __func__);
   sqlite3_mutex_enter(sqlcipher_mutex(SQLCIPHER_MUTEX_PROVIDER_RAND));
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "sqlcipher_openssl_add_random: entered SQLCIPHER_MUTEX_PROVIDER_RAND");
+  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: entered SQLCIPHER_MUTEX_PROVIDER_RAND", __func__);
 #endif
   RAND_add(buffer, length, 0);
 #ifndef SQLCIPHER_OPENSSL_NO_MUTEX_RAND
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "sqlcipher_openssl_add_random: leaving SQLCIPHER_MUTEX_PROVIDER_RAND");
+  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: leaving SQLCIPHER_MUTEX_PROVIDER_RAND", __func__);
   sqlite3_mutex_leave(sqlcipher_mutex(SQLCIPHER_MUTEX_PROVIDER_RAND));
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "sqlcipher_openssl_add_random: left SQLCIPHER_MUTEX_PROVIDER_RAND");
+  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: left SQLCIPHER_MUTEX_PROVIDER_RAND", __func__);
 #endif
   return SQLITE_OK;
 }
@@ -84,7 +84,7 @@ static int sqlcipher_openssl_add_random(void *ctx, const void *buffer, int lengt
 
 /* activate and initialize sqlcipher. Most importantly, this will automatically
    intialize OpenSSL's EVP system if it hasn't already be externally. Note that 
-   this function may be called multiple times as new codecs are intiialized. 
+   this function may be called multiple times as sqlcipher databases are intiialized. 
    Thus it performs some basic counting to ensure that only the last and final
    sqlcipher_openssl_deactivate() will free the EVP structures. 
 */
@@ -92,18 +92,18 @@ static int sqlcipher_openssl_activate(void *ctx) {
   /* initialize openssl and increment the internal init counter
      but only if it hasn't been initalized outside of SQLCipher by this program 
      e.g. on startup */
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "sqlcipher_openssl_activate: entering SQLCIPHER_MUTEX_PROVIDER_ACTIVATE");
+  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: entering SQLCIPHER_MUTEX_PROVIDER_ACTIVATE", __func__);
   sqlite3_mutex_enter(sqlcipher_mutex(SQLCIPHER_MUTEX_PROVIDER_ACTIVATE));
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "sqlcipher_openssl_activate: entered SQLCIPHER_MUTEX_PROVIDER_ACTIVATE");
+  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: entered SQLCIPHER_MUTEX_PROVIDER_ACTIVATE", __func__);
 
 #if (defined(OPENSSL_VERSION_NUMBER) && OPENSSL_VERSION_NUMBER < 0x10100000L)
   ERR_load_crypto_strings();
 #endif
 
   openssl_init_count++; 
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "sqlcipher_openssl_activate: leaving SQLCIPHER_MUTEX_PROVIDER_ACTIVATE");
+  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: leaving SQLCIPHER_MUTEX_PROVIDER_ACTIVATE", __func__);
   sqlite3_mutex_leave(sqlcipher_mutex(SQLCIPHER_MUTEX_PROVIDER_ACTIVATE));
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "sqlcipher_openssl_activate: left SQLCIPHER_MUTEX_PROVIDER_ACTIVATE");
+  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: left SQLCIPHER_MUTEX_PROVIDER_ACTIVATE", __func__);
   return SQLITE_OK;
 }
 
@@ -111,15 +111,15 @@ static int sqlcipher_openssl_activate(void *ctx) {
    freeing the EVP structures on the final deactivation to ensure that 
    OpenSSL memory is cleaned up */
 static int sqlcipher_openssl_deactivate(void *ctx) {
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "sqlcipher_openssl_deactivate: entering SQLCIPHER_MUTEX_PROVIDER_ACTIVATE");
+  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: entering SQLCIPHER_MUTEX_PROVIDER_ACTIVATE", __func__);
   sqlite3_mutex_enter(sqlcipher_mutex(SQLCIPHER_MUTEX_PROVIDER_ACTIVATE));
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "sqlcipher_openssl_deactivate: entered SQLCIPHER_MUTEX_PROVIDER_ACTIVATE");
+  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: entered SQLCIPHER_MUTEX_PROVIDER_ACTIVATE", __func__);
 
   openssl_init_count--;
 
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "sqlcipher_openssl_deactivate: leaving SQLCIPHER_MUTEX_PROVIDER_ACTIVATE");
+  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: leaving SQLCIPHER_MUTEX_PROVIDER_ACTIVATE", __func__);
   sqlite3_mutex_leave(sqlcipher_mutex(SQLCIPHER_MUTEX_PROVIDER_ACTIVATE));
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "sqlcipher_openssl_deactivate: left SQLCIPHER_MUTEX_PROVIDER_ACTIVATE");
+  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: left SQLCIPHER_MUTEX_PROVIDER_ACTIVATE", __func__);
   return SQLITE_OK;
 }
 
@@ -145,18 +145,18 @@ static int sqlcipher_openssl_random (void *ctx, void *buffer, int length) {
      but a more proper solution is that applications setup platform-appropriate
      thread saftey in openssl externally */
 #ifndef SQLCIPHER_OPENSSL_NO_MUTEX_RAND
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "sqlcipher_openssl_random: entering SQLCIPHER_MUTEX_PROVIDER_RAND");
+  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: entering SQLCIPHER_MUTEX_PROVIDER_RAND", __func__);
   sqlite3_mutex_enter(sqlcipher_mutex(SQLCIPHER_MUTEX_PROVIDER_RAND));
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "sqlcipher_openssl_random: entered SQLCIPHER_MUTEX_PROVIDER_RAND");
+  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: entered SQLCIPHER_MUTEX_PROVIDER_RAND", __func__);
 #endif
   rc = RAND_bytes((unsigned char *)buffer, length);
 #ifndef SQLCIPHER_OPENSSL_NO_MUTEX_RAND
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "sqlcipher_openssl_random: leaving SQLCIPHER_MUTEX_PROVIDER_RAND");
+  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: leaving SQLCIPHER_MUTEX_PROVIDER_RAND", __func__);
   sqlite3_mutex_leave(sqlcipher_mutex(SQLCIPHER_MUTEX_PROVIDER_RAND));
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "sqlcipher_openssl_random: left SQLCIPHER_MUTEX_PROVIDER_RAND");
+  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: left SQLCIPHER_MUTEX_PROVIDER_RAND", __func__);
 #endif
   if(rc != 1) {
-    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_random: RAND_bytes() returned %d", rc);
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: RAND_bytes() returned %d", __func__, rc);
     sqlcipher_openssl_log_errors();
     return SQLITE_ERROR;
   }
@@ -183,14 +183,14 @@ static int sqlcipher_openssl_hmac(
 
   mac = EVP_MAC_fetch(NULL, "HMAC", NULL);
   if(mac == NULL) {
-    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_hmac: EVP_MAC_fetch for HMAC failed");
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_MAC_fetch for HMAC failed", __func__);
     sqlcipher_openssl_log_errors();
     goto error;
   }
 
   hctx = EVP_MAC_CTX_new(mac);
   if(hctx == NULL) {
-    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_hmac: EVP_MAC_CTX_new() failed");
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_MAC_CTX_new() failed", __func__);
     sqlcipher_openssl_log_errors();
     goto error;
   }
@@ -198,52 +198,52 @@ static int sqlcipher_openssl_hmac(
   switch(algorithm) {
     case SQLCIPHER_HMAC_SHA1:
       if(!(rc = EVP_MAC_init(hctx, hmac_key, key_sz, sha1))) {
-        sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_hmac: EVP_MAC_init() with key size %d and sha1 returned %d", key_sz, rc);
+        sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_MAC_init() with key size %d and sha1 returned %d", __func__, key_sz, rc);
         sqlcipher_openssl_log_errors();
         goto error;
       }
       break;
     case SQLCIPHER_HMAC_SHA256:
       if(!(rc = EVP_MAC_init(hctx, hmac_key, key_sz, sha256))) {
-        sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_hmac: EVP_MAC_init() with key size %d and sha256 returned %d", key_sz, rc);
+        sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_MAC_init() with key size %d and sha256 returned %d", __func__, key_sz, rc);
         sqlcipher_openssl_log_errors();
         goto error;
       }
       break;
     case SQLCIPHER_HMAC_SHA512:
       if(!(rc = EVP_MAC_init(hctx, hmac_key, key_sz, sha512))) {
-        sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_hmac: EVP_MAC_init() with key size %d and sha512 returned %d", key_sz, rc);
+        sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_MAC_init() with key size %d and sha512 returned %d", __func__, key_sz, rc);
         sqlcipher_openssl_log_errors();
         goto error;
       }
       break;
     default:
-      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_hmac: invalid algorithm %d", algorithm);
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: invalid algorithm %d", __func__, algorithm);
       goto error;
   }
 
   if(!(rc = EVP_MAC_update(hctx, in, in_sz))) {
-    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_hmac: EVP_MAC_update() on 1st input buffer of %d bytes using algorithm %d returned %d", in_sz, algorithm, rc);
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_MAC_update() on 1st input buffer of %d bytes using algorithm %d returned %d", __func__, in_sz, algorithm, rc);
     sqlcipher_openssl_log_errors();
     goto error;
   }
 
   if(in2 != NULL) {
     if(!(rc = EVP_MAC_update(hctx, in2, in2_sz))) {
-      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_hmac: EVP_MAC_update() on 2nd input buffer of %d bytes using algorithm %d returned %d", in_sz, algorithm, rc);
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_MAC_update() on 2nd input buffer of %d bytes using algorithm %d returned %d", __func__, in_sz, algorithm, rc);
       sqlcipher_openssl_log_errors();
       goto error;
     }
   }
 
   if(!(rc = EVP_MAC_final(hctx, NULL, &outlen, 0))) {
-    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_hmac: 1st EVP_MAC_final() for output length calculation using algorithm %d returned %d", algorithm, rc);
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: 1st EVP_MAC_final() for output length calculation using algorithm %d returned %d", __func__, algorithm, rc);
     sqlcipher_openssl_log_errors();
     goto error;
   }
 
   if(!(rc = EVP_MAC_final(hctx, out, &outlen, outlen))) {
-    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_hmac: 2nd EVP_MAC_final() using algorithm %d returned %d", algorithm, rc);
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: 2nd EVP_MAC_final() using algorithm %d returned %d", __func__, algorithm, rc);
     sqlcipher_openssl_log_errors();
     goto error;
   }
@@ -273,21 +273,21 @@ static int sqlcipher_openssl_kdf(
   switch(algorithm) {
     case SQLCIPHER_PBKDF2_HMAC_SHA1:
       if(!(rc = PKCS5_PBKDF2_HMAC((const char *)pass, pass_sz, salt, salt_sz, workfactor, EVP_sha1(), key_sz, key))) {
-        sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_kdf: PKCS5_PBKDF2_HMAC() for EVP_sha1() workfactor %d and key size %d returned %d", workfactor, key_sz, rc);
+        sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: PKCS5_PBKDF2_HMAC() for EVP_sha1() workfactor %d and key size %d returned %d", __func__, workfactor, key_sz, rc);
         sqlcipher_openssl_log_errors();
         goto error;
       }
       break;
     case SQLCIPHER_PBKDF2_HMAC_SHA256:
       if(!(rc = PKCS5_PBKDF2_HMAC((const char *)pass, pass_sz, salt, salt_sz, workfactor, EVP_sha256(), key_sz, key))) {
-        sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_kdf: PKCS5_PBKDF2_HMAC() for EVP_sha256() workfactor %d and key size %d returned %d", workfactor, key_sz, rc);
+        sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: PKCS5_PBKDF2_HMAC() for EVP_sha256() workfactor %d and key size %d returned %d", __func__, workfactor, key_sz, rc);
         sqlcipher_openssl_log_errors();
         goto error;
       }
       break;
     case SQLCIPHER_PBKDF2_HMAC_SHA512:
       if(!(rc = PKCS5_PBKDF2_HMAC((const char *)pass, pass_sz, salt, salt_sz, workfactor, EVP_sha512(), key_sz, key))) {
-        sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_kdf: PKCS5_PBKDF2_HMAC() for EVP_sha512() workfactor %d and key size %d returned %d", workfactor, key_sz, rc);
+        sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: PKCS5_PBKDF2_HMAC() for EVP_sha512() workfactor %d and key size %d returned %d", __func__, workfactor, key_sz, rc);
         sqlcipher_openssl_log_errors();
         goto error;
       }
@@ -314,31 +314,31 @@ static int sqlcipher_openssl_cipher(
   int tmp_csz, csz, rc = 0;
   EVP_CIPHER_CTX* ectx = EVP_CIPHER_CTX_new();
   if(ectx == NULL) {
-    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_cipher: EVP_CIPHER_CTX_new failed");
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_CIPHER_CTX_new failed", __func__);
     sqlcipher_openssl_log_errors();
     goto error;
   }
 
   if(!(rc = EVP_CipherInit_ex(ectx, OPENSSL_CIPHER, NULL, NULL, NULL, mode))) {
-    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_cipher: EVP_CipherInit_ex for mode %d returned %d", mode, rc);
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_CipherInit_ex for mode %d returned %d", __func__, mode, rc);
     sqlcipher_openssl_log_errors();
     goto error;
   }
 
   if(!(rc = EVP_CIPHER_CTX_set_padding(ectx, 0))) { /* no padding */
-    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_cipher: EVP_CIPHER_CTX_set_padding 0 returned %d", rc);
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_CIPHER_CTX_set_padding 0 returned %d", __func__, rc);
     sqlcipher_openssl_log_errors();
     goto error;
   }
 
   if(!(rc = EVP_CipherInit_ex(ectx, NULL, NULL, key, iv, mode))) {
-    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_cipher: EVP_CipherInit_ex for mode %d returned %d", mode, rc);
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_CipherInit_ex for mode %d returned %d", __func__, mode, rc);
     sqlcipher_openssl_log_errors();
     goto error;
   }
 
   if(!(rc = EVP_CipherUpdate(ectx, out, &tmp_csz, in, in_sz))) {
-    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_cipher: EVP_CipherUpdate returned %d", rc);
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_CipherUpdate returned %d", __func__, rc);
     sqlcipher_openssl_log_errors();
     goto error;
   }
@@ -346,7 +346,7 @@ static int sqlcipher_openssl_cipher(
   csz = tmp_csz;  
   out += tmp_csz;
   if(!(rc = EVP_CipherFinal_ex(ectx, out, &tmp_csz))) {
-    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "sqlcipher_openssl_cipher: EVP_CipherFinal_ex returned %d", rc);
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_CipherFinal_ex returned %d", __func__, rc);
     sqlcipher_openssl_log_errors();
     goto error;
   }

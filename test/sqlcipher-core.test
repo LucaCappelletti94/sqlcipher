@@ -88,6 +88,7 @@ do_test will-open-with-correct-derived-textkey {
 db close
 file delete -force test.db
 
+# same test as above, but use pragma hexkey
 setup test.db "'testkey'"
 do_test will-open-with-correct-derived-hexkey {
 
@@ -106,20 +107,6 @@ file delete -force test.db
 do_test hexkey-uri-invalid-fails-to-open {
   list [catch { sqlite_orig db "file:test.db?hexkey=zz" } msg] $msg
 } {1 {bad parameter or other API misuse}}
-file delete -force test.db
-
-# run test with sqlite3_key function directly
-setup test.db "'testkey'"
-do_test will-open-with-sqlite3key {
-
-  sqlite_orig db test.db
-  sqlite3_key db "testkey"
-  execsql {
-    SELECT name FROM sqlite_schema WHERE type='table';
-    SELECT * from t1;
-  }
-} {t1 test1 test2}
-db close
 file delete -force test.db
 
 # set an encryption key (non-hex) and create
@@ -197,22 +184,10 @@ file delete -force test.db
 # test a large number of inserts in a transaction to a memory database 
 do_test memory-database {
   sqlite_orig db :memory:
-  execsql {
+  catchsql {
     PRAGMA key = 'testkey3';
-    BEGIN;
-    CREATE TABLE t2(a,b);
   }
-  for {set i 1} {$i<=25000} {incr i} {
-    set r [expr {int(rand()*500000)}]
-    execsql "INSERT INTO t2 VALUES($i,$r);" 
-  }
-  execsql {
-    COMMIT;
-    SELECT count(*) FROM t2;
-    DELETE FROM t2;
-    SELECT count(*) FROM t2;
-  } 
-} {25000 0}
+} {1 {An error occurred with PRAGMA key or rekey. PRAGMA key requires a key of one or more characters. PRAGMA rekey can only be run on an existing encrypted database. Use sqlcipher_export() and ATTACH to convert encrypted/plaintext databases.}}
 db close
 
 # test a large number of inserts in a transaction for multiple pages
@@ -1029,6 +1004,204 @@ do_test uri-key-2 {
 db close
 file delete -force test.db
 
+# when powersafe overwrite is disabled, the 
+# sector size will be different. on modern drives the sector size will
+# be 4096, the same size as a normal page. Test that journal header writes
+# will still work in this scenario
+do_test journal-mode-delete-header-no-psow {
+  sqlite_orig db file:test.db?psow=0
+
+  execsql {
+    PRAGMA key = 'testkey';
+    PRAGMA cache_size = 0;
+    CREATE table t1(a INTEGER PRIMARY KEY AUTOINCREMENT,b);
+    BEGIN;
+  }
+
+  for {set tx 1} {$tx <= 100} {incr tx} {
+    execsql "INSERT INTO t1(b) VALUES(zeroblob(4096));"
+  }
+
+  execsql {
+    COMMIT;
+
+    BEGIN;
+    UPDATE t1 SET a = a+100;
+    COMMIT;
+  }
+   
+  db close
+  sqlite_orig db file:test.db?psow=0
+
+  execsql {
+    PRAGMA key = 'testkey';
+    SELECT count(*) FROM t1;
+    PRAGMA integrity_check;
+    PRAGMA cipher_integrity_check;
+  }
+
+} {ok 100 ok}
+db close
+file delete -force test.db
+
+# when powersafe overwrite is disabled, verify a transaction can
+# be rolled back successfully
+do_test journal-mode-delete-rollback-no-psow {
+  sqlite_orig db file:test.db?psow=0
+
+  execsql {
+    PRAGMA key = 'testkey';
+    PRAGMA cache_size = 0;
+    CREATE table t1(a INTEGER PRIMARY KEY AUTOINCREMENT,b);
+    BEGIN;
+  }
+
+  for {set tx 1} {$tx <= 100} {incr tx} {
+    execsql "INSERT INTO t1(b) VALUES(zeroblob(4096));"
+  }
+
+  execsql {
+    COMMIT;
+
+    BEGIN;
+    UPDATE t1 SET a = a+100;
+    ROLLBACK;
+  }
+   
+  db close
+  sqlite_orig db file:test.db?psow=0
+
+  execsql {
+    PRAGMA key = 'testkey';
+    SELECT count(*) FROM t1 WHERE a > 100;
+    PRAGMA integrity_check;
+    PRAGMA cipher_integrity_check;
+  }
+
+} {ok 0 ok}
+db close
+file delete -force test.db
+
+# test reading and writing random row sets in transactions
+# to verify that the sector-size padding of the journal is
+# respected and does not cause issues when
+# power safe overwrite is disabled
+do_test journal-mode-delete-padding-no-psow {
+  sqlite_orig db file:test.db?psow=0
+
+  execsql {
+    PRAGMA key = 'testkey';
+    PRAGMA cache_size = 0;
+    CREATE table t1(a INTEGER PRIMARY KEY AUTOINCREMENT,b);
+    BEGIN;
+  }
+
+  # insert 50,000 new records
+  for {set i 0} {$i < 50000} {incr i} {
+    execsql "INSERT INTO t1(b) VALUES('value $i');"
+  }
+  execsql {
+    COMMIT;
+  }
+
+  # update a random number of rows in a transaction between
+  # and half the table size. this will generate some random
+  # number of page entries in the journal
+  for {set tx 0} {$tx < 100} {incr tx} {
+    execsql {BEGIN;}
+    set n [expr {int(rand() * 25000) + 1}]
+    execsql "UPDATE t1 SET b = 'value $n' WHERE a < $n;"
+    execsql {COMMIT;}
+  }
+
+  db close
+  sqlite_orig db file:test.db?psow=0
+
+  execsql {
+    PRAGMA key = 'testkey';
+    SELECT count(*) FROM t1;
+    PRAGMA journal_mode;
+    PRAGMA integrity_check;
+    PRAGMA cipher_integrity_check;
+  }
+
+} {ok 50000 delete ok}
+db close
+file delete -force test.db
+
+# test sector-padded WAL mode with
+# synchronous = FULL and 
+# SQLITE_IOCAP_POWERSAFE_OVERWRITE = 0
+# run 10K transactions in a loop
+do_test journal-mode-wal-no-psow {
+  sqlite_orig db file:test.db?psow=0
+
+  execsql {
+    PRAGMA key = 'testkey';
+    PRAGMA cache_size = 0;
+    PRAGMA journal_mode = WAL;
+    PRAGMA synchronous=FULL;
+    CREATE table t1(a INTEGER PRIMARY KEY AUTOINCREMENT,b);
+  }
+
+  for {set tx 1} {$tx <= 1000} {incr tx} {
+    execsql {BEGIN;}
+    set nrows [expr {int(rand() * 100) + 1}]
+
+    for {set i 0} {$i < $nrows} {incr i} {
+      set n [expr {int(rand() * 1024)}]
+
+      execsql "INSERT INTO t1(b) VALUES(zeroblob($n));"
+    }
+    execsql {
+      COMMIT;
+    }
+    if {$tx % 10 == 0} {
+      execsql "PRAGMA wal_checkpoint(FULL);"
+    }
+  }
+
+  db close
+  sqlite_orig db file:test.db?psow=0
+
+  execsql {
+    PRAGMA key = 'testkey';
+    SELECT count(*) > 10 FROM t1;
+    PRAGMA journal_mode;
+    PRAGMA integrity_check;
+    PRAGMA cipher_integrity_check;
+  }
+
+} {ok 1 wal ok}
+db close
+file delete -force test.db
+
+# test statement journal
+# note: requires -DSQLITE_STMTJRNL_SPILL=1
+do_test statement-journal {
+  sqlite_orig db file:test.db?psow=0
+
+  execsql {
+    PRAGMA key = 'testkey';
+    PRAGMA cache_size = 0;
+    PRAGMA temp_store = file;
+
+    CREATE TABLE t1(a integer primary key, b unique, c);
+
+    INSERT INTO t1(a,c) VALUES (1, zeroblob(4096)), (2,zeroblob(4096)), (3,zeroblob(4096)), (4,zeroblob(4096)), (5,zeroblob(4097)); 
+
+    BEGIN;
+
+    UPDATE t1 SET b = a + 1;
+  }
+  catchsql {
+    UPDATE t1 SET a = CASE WHEN a IN (4) THEN 1 ELSE a END;
+  }
+
+} {1 {UNIQUE constraint failed: t1.a}}
+db close
+file delete -force test.db
+
 # test cipher_status reports encrypted for database
 do_test cipher-status-encrypted {
   sqlite_orig db test.db
@@ -1108,6 +1281,27 @@ do_test cipher-status-badkey {
 db close
 file delete -force test.db
 
+# similar test as previous but try modifying the schema
+# immediately without reading it first.
+do_test schema-mod-after-bad-key {
+  set rc {}
+  sqlite_orig db test.db
+  execsql {
+    PRAGMA key = 'test';
+    CREATE TABLE t1(a,b);
+    INSERT INTO t1(a,b) VALUES (1,2);
+  }
+  db close
+
+  sqlite_orig db test.db
+  catchsql {
+    PRAGMA key = 'wrong';
+    CREATE TABLE t1(a,b);
+  }
+} {1 {file is not a database}}
+db close
+file delete -force test.db
+
 # test that an initialization failure which can't attach
 # the context will leave the database unusuable (at least
 # for writes) to prevent an unencrypted database from being
@@ -1125,7 +1319,7 @@ do_test init-failure-blocks-db-use {
     CREATE TABLE t1(a,b);
   }]
 
-  lappend rc [execsql {
+  lappend rc [catchsql {
     SELECT * FROM sqlite_master;
   }]
 
@@ -1137,7 +1331,7 @@ do_test init-failure-blocks-db-use {
   }
 
   set rc
-} {{1 {An error occurred with PRAGMA key or rekey. PRAGMA key requires a key of one or more characters. PRAGMA rekey can only be run on an existing encrypted database. Use sqlcipher_export() and ATTACH to convert encrypted/plaintext databases.}} {1 {attempt to write a readonly database}} {}}
+} {{1 {An error occurred with PRAGMA key or rekey. PRAGMA key requires a key of one or more characters. PRAGMA rekey can only be run on an existing encrypted database. Use sqlcipher_export() and ATTACH to convert encrypted/plaintext databases.}} {1 {attempt to write a readonly database}} {1 {disk I/O error}}}
 db close
 file delete -force test.db
 
@@ -1168,7 +1362,7 @@ foreach mode {delete wal} {
       PRAGMA cipher_default_page_size = 4096;
     }
     set rc
-  } {{1 {An error occurred with PRAGMA key or rekey. PRAGMA key requires a key of one or more characters. PRAGMA rekey can only be run on an existing encrypted database. Use sqlcipher_export() and ATTACH to convert encrypted/plaintext databases.}} {1 {SQL logic error}} {1 {SQL logic error}}}
+  } {{1 {An error occurred with PRAGMA key or rekey. PRAGMA key requires a key of one or more characters. PRAGMA rekey can only be run on an existing encrypted database. Use sqlcipher_export() and ATTACH to convert encrypted/plaintext databases.}} {1 {disk I/O error}} {1 {disk I/O error}}}
   db close
   file delete -force test.db
 }
@@ -1217,10 +1411,6 @@ file delete -force test.db
 # restors the database to the consistant state
 foreach mode {delete wal} {
 
-  set exp "{1 {cannot commit - no transaction is active}}"
-  if {$mode == "wal"} {
-    set exp "{1 {out of memory}}"
-  }
   do_test post-init-failure-blocks-db-use-txn-$mode {
     sqlite_orig db test.db
     set rc {}
@@ -1260,7 +1450,7 @@ foreach mode {delete wal} {
     }]
 
     set rc
-  } "{0 {}} {1 {out of memory}} $exp {ok 1 ok}"
+  } "{0 {}} {1 {disk I/O error}} {1 {cannot commit - no transaction is active}} {ok 1 ok}"
   db close
   file delete -force test.db
 }
@@ -1291,5 +1481,554 @@ do_test init-failure-no-mem-leak {
 db close
 file delete -force test.db
 
-finish_test
+# test cipher_status does not return any result
+# if the SQLCipher VFS is not being used
+setup test.db "'testkey'"
+do_test cipher-status-no-vfs {
+  sqlite_orig db file:test.db?vfs=unix
 
+  execsql {
+    PRAGMA cipher_status;
+  }
+
+} {}
+db close
+file delete -force test.db
+
+# test cipher_fips_status reports 0
+do_test cipher-status-encrypted {
+  sqlite_orig db test.db
+
+  execsql {
+    PRAGMA key = 'test';
+    PRAGMA cipher_fips_status;
+  }
+
+} {ok 0}
+db close
+file delete -force test.db
+
+# verify a schema check, followed by an incorrect key,
+# followed by a second schema check returns the proper error
+setup test.db "'testkey'"
+do_test schema-check-badkey {
+  sqlite_orig db test.db
+  set rc  {}
+
+  lappend rc [catchsql {
+    SELECT count(*) FROM sqlite_master;
+  }]
+  
+  execsql {
+    PRAGMA key = 'bad';
+  }
+
+  lappend rc [catchsql {
+    SELECT count(*) FROM sqlite_master;
+  }]
+
+} {{1 {file is not a database}} {1 {file is not a database}}}
+db close
+file delete -force test.db
+
+# open a database and specify a non-sqlcipher vfs, verify
+# that calling pragma key will return an misuse error
+do_test non-sqlcipher-vfs {
+  sqlite_orig db file:test.db?vfs=unix
+
+  catchsql {
+    PRAGMA key = 'testkey';
+  }
+
+} {1 {An error occurred with PRAGMA key or rekey. PRAGMA key requires a key of one or more characters. PRAGMA rekey can only be run on an existing encrypted database. Use sqlcipher_export() and ATTACH to convert encrypted/plaintext databases.}}
+db close
+file delete -force test.db
+
+# verify data is readable even if mmap is enabled
+# because the vfs disables it to prevent direct reads
+do_test will-open-with-mmap {
+  sqlite_orig db test.db
+  execsql {
+    PRAGMA key = 'testkey';
+    CREATE TABLE t1(a,b);
+    BEGIN;
+  }
+  for {set i 1} {$i<=25000} {incr i} {
+    set r [expr {int(rand()*500000)}]
+    execsql "INSERT INTO t1 VALUES($i,$r);" 
+  }
+  execsql {
+    COMMIT;
+  } 
+  db close
+
+  sqlite_orig db test.db
+  execsql {
+    PRAGMA mmap_size = 67108864;
+    PRAGMA key = 'testkey';
+    SELECT count(*) from t1;
+  }
+} {67108864 ok 25000}
+db close
+file delete -force test.db
+
+# cache spill / corruption tests
+foreach mode {delete wal truncate persist} {
+  
+  # write content to the database inside a transaction, then update it in place. This will
+  # rewrite pages / frames. In Wal mode this will cause checksume rewrite as well
+  do_test inplace-overwrite-$mode {
+    sqlite_orig db test.db
+
+    execsql "
+      PRAGMA key = 'test123';
+      PRAGMA journal_mode = $mode;
+      PRAGMA cache_size = 0;
+      CREATE TABLE t1(a, b);
+      BEGIN;
+    "
+
+    for {set i 1} {$i<=5000} {incr i} {
+      execsql "INSERT INTO t1 VALUES($i, zeroblob(5000))"
+    }
+
+    execsql "UPDATE t1 SET b=zeroblob(4999) WHERE a<2500"
+
+    execsql { 
+      COMMIT;
+      PRAGMA wal_checkpoint(FULL);
+    }
+
+    execsql {
+      SELECT count(*) FROM t1;
+    }
+  } {5000}
+  db close
+
+  # run integrity check
+  do_test inplace-overwrite-reopen-$mode {
+    sqlite_orig db test.db
+
+    execsql {
+      PRAGMA key = 'test123';
+      PRAGMA integrity_check;
+    }
+  } {ok ok}
+  db close
+  file delete -force test.db
+
+  # similar test to above, but execute a rollback instead of a commit
+  do_test rollback-after-spill-$mode {
+    sqlite_orig db test.db
+
+    execsql "
+      PRAGMA key = 'test123';
+      PRAGMA journal_mode = $mode;
+      PRAGMA cache_size = 0;
+      CREATE TABLE t1(a, b);
+      BEGIN;
+    "
+
+    for {set i 1} {$i<=1000} {incr i} {
+      execsql "INSERT INTO t1 VALUES($i, zeroblob(5000))"
+    }
+
+    execsql {
+      COMMIT;
+    }
+
+    # new transaction writes and spills, but then rolls back
+    execsql {
+      BEGIN;
+    }
+
+    for {set i 1001} {$i<=4000} {incr i} {
+      execsql "INSERT INTO t1 VALUES($i, zeroblob(5000))"
+    }
+
+    execsql "UPDATE t1 SET b=zeroblob(4999) WHERE a<2500"
+
+    execsql {
+      ROLLBACK;
+    }
+
+    execsql {
+      SELECT count(*) FROM t1;
+    }
+  } {1000}
+  db close
+
+  do_test rollback-after-spill-reopen-$mode {
+    sqlite_orig db test.db
+    execsql {
+      PRAGMA key = 'test123';
+      PRAGMA integrity_check;
+    }
+  } {ok ok}
+  db close
+  file delete -force test.db
+}
+
+
+
+# Test the scenario where the page size is set to the exact same value
+# as the sector size. In this case writes of a journal file to the the journal can't be destinguished 
+# from encrypted pages by page size alone, and instead must be gated based on the position in the journal file. 
+# With PSOW enabled the default sector size would be set to 512 which is  too small to support SQLCipher's
+# reserve size requirement (reserve on a 512 db is limited to 32 bytes). As a result, psow is disable for
+# these tests. Then page size is set to 4096 to match the sector size. Then we write a bunch of data out to the journal
+# file, and make sure that at least a couple journal headers are written. Then we process a commit, and do
+# the same with a rollback to ensure that they both work and the page accounting works.
+
+foreach mode {delete truncate persist} {
+
+  # write content to the database inside a transaction and ensure that
+  # cache spills to journal file and headers are written
+  do_test journal-header-prepare-$mode {
+    sqlite_orig db file:test.db?psow=0
+
+    execsql "
+      PRAGMA key = 'test123';
+      PRAGMA cipher_page_size = 4096;
+      PRAGMA journal_mode = $mode;
+      PRAGMA cache_size = 0;
+      CREATE TABLE t1(a, b);
+      BEGIN;
+    "
+
+    for {set i 1} {$i<=5000} {incr i} {
+      execsql "INSERT INTO t1 VALUES($i, zeroblob(5000))"
+    }
+
+    execsql { 
+      COMMIT;
+      PRAGMA wal_checkpoint(FULL);
+    }
+
+    execsql {
+      SELECT count(*) FROM t1;
+      SELECT count(*) FROM t1 WHERE a > 5000
+    }
+  } {5000 0}
+  db close
+
+  # open previous file, insert less data but still spill, then rollback
+  # in persist mode specifically, this would allow reuse of the
+  # existing journal file from the previous step, so ensure that the
+  # rollback succeeds and the integrity check passes
+  do_test journal-header-rollback-$mode {
+    sqlite_orig db file:test.db?psow=0
+
+    execsql "
+      PRAGMA key = 'test123';
+      PRAGMA cipher_page_size = 4096;
+      PRAGMA journal_mode = $mode;
+      PRAGMA cache_size = 0;
+      BEGIN;
+    "
+
+    for {set i 5001} {$i<=7000} {incr i} {
+      execsql "INSERT INTO t1 VALUES($i, zeroblob(5000))"
+    }
+
+    execsql {
+      ROLLBACK;
+    }
+
+    execsql {
+      SELECT count(*) FROM t1;
+      SELECT count(*) FROM t1 WHERE a > 5000;
+      PRAGMA integrity_check;
+    }
+  } {5000 0 ok}
+  db close
+
+  file delete -force test.db
+}
+
+# Run a looped series of tests covering the major journal modes,
+# various page sizes, and PSOW options to verify that
+# recovery works. This provides a broad exercise of the
+# recovery system. It covers some very important cases
+# when PSOW=0 and page_sz = 4096 where page size is equal to 
+# sector size, which affects journal header detection and
+# the logic to split wal writes across sector boundaries.
+#
+# Each of these tests has a common flow, where the start
+# sets up a new database and populates rows into to. Then
+# a force copy of the database is ues to simulate a crash (similar to
+# sqlite WAL tests). In WAL mode -shm is not included. When those
+# copies are opened recover runs and the state is verified.
+#
+# Some special pragmas are important here:
+# - cache_size = 0 forces page spill to pages are not cached
+# - wal_autocheckpoint prevents non-deterministic checkpointing
+# - synchronous set to FULL when psow is 0 to force split writes
+
+set rows 200
+
+foreach mode {delete persist wal} {
+  foreach page_sz {1024 4096 8192} {
+    foreach {psow sync} {0 FULL 1 NORMAL} {
+
+      # verify that commits can be successfully rolled back
+      # on an open transaction
+      do_test rollback-$mode-$page_sz-$psow {
+        sqlite_orig db file:test.db?psow=$psow
+        execsql "
+          PRAGMA key = 'test123';
+          PRAGMA cipher_page_size = $page_sz;
+          PRAGMA journal_mode = $mode;
+          PRAGMA synchronous = $sync;
+          PRAGMA wal_autocheckpoint = 0;
+          PRAGMA cache_size = 0;
+          CREATE TABLE t1(a INTEGER PRIMARY KEY, b);
+          INSERT INTO t1 VALUES(1, zeroblob(500));
+          BEGIN;
+        "
+        for {set i 2} {$i <= $rows} {incr i} {
+          execsql "INSERT INTO t1 VALUES($i, zeroblob(2000))"
+        }
+        execsql {
+          ROLLBACK;
+          SELECT count(*) FROM t1;
+          PRAGMA integrity_check;
+        }
+      } {1 ok}
+      db close
+      forcedelete test.db test.db-journal test.db-wal test.db-shm
+
+      # make many small commits to stress split write wal frames
+      # splits will occur when PSOW=0 and synchronous=FULL on the
+      # 4096 sector size every 1024 pages written to log
+      do_test split-writes-$mode-$page_sz-$psow {
+        sqlite_orig db file:test.db?psow=$psow
+        execsql "
+          PRAGMA key = 'test123';
+          PRAGMA cipher_page_size = $page_sz;
+          PRAGMA journal_mode = $mode;
+          PRAGMA synchronous = $sync;
+          PRAGMA wal_autocheckpoint = 0;
+          PRAGMA cache_size = 0;
+          CREATE TABLE t1(a INTEGER PRIMARY KEY, b);
+          INSERT INTO t1 VALUES(1, zeroblob(64));
+        "
+        for {set i 2} {$i <= 3000} {incr i} {
+          execsql "INSERT INTO t1 VALUES($i, zeroblob(64))"
+        }
+
+        forcecopy test.db test2.db
+
+        if {[file exists test.db-wal]} {
+          forcecopy test.db-wal test2.db-wal
+        }
+        if {[file exists test.db-journal]} {
+          forcecopy test.db-journal test2.db-journal
+        }
+        db close
+
+        sqlite_orig db file:test2.db?psow=$psow
+        execsql "
+          PRAGMA key = 'test123';
+          PRAGMA cipher_page_size = $page_sz;
+          PRAGMA integrity_check;
+          SELECT count(*) FROM t1;
+        "
+      } "ok ok 3000"
+      db close
+      forcedelete test.db test.db-journal test.db-wal test.db-shm
+      forcedelete test2.db test2.db-journal test2.db-wal test2.db-shm
+
+      # if a transaction is committed in wal mode but not checkpointed
+      # data will still be in the wal file. verify that it is
+      # consistent post recovery
+      do_test recover-committed-$mode-$page_sz-$psow {
+        sqlite_orig db file:test.db?psow=$psow
+        execsql "
+          PRAGMA key = 'test123';
+          PRAGMA cipher_page_size = $page_sz;
+          PRAGMA journal_mode = $mode;
+          PRAGMA synchronous = $sync;
+          PRAGMA wal_autocheckpoint = 0;
+          PRAGMA cache_size = 0;
+          CREATE TABLE t1(a INTEGER PRIMARY KEY, b);
+          INSERT INTO t1 VALUES(1, zeroblob(500));
+          BEGIN;
+        "
+        for {set i 2} {$i <= $rows} {incr i} {
+          execsql "INSERT INTO t1 VALUES($i, zeroblob(2000))"
+        }
+
+        execsql { COMMIT; }
+
+        forcecopy test.db test2.db
+
+        if {[file exists test.db-wal]} {
+          forcecopy test.db-wal test2.db-wal
+        }
+        if {[file exists test.db-journal]} {
+          forcecopy test.db-journal test2.db-journal
+        }
+        db close
+
+        sqlite_orig db file:test2.db?psow=$psow
+        execsql "
+          PRAGMA key = 'test123';
+          PRAGMA cipher_page_size = $page_sz;
+          PRAGMA integrity_check;
+          SELECT count(*) FROM t1;
+        "
+      } "ok ok $rows"
+      db close
+      forcedelete test.db test.db-journal test.db-wal test.db-shm
+      forcedelete test2.db test2.db-journal test2.db-wal test2.db-shm
+
+      # if a transaction is not committed, verify it is rolled
+      # back as part of the recovery process
+      do_test recover-uncommitted-$mode-$page_sz-$psow {
+        sqlite_orig db file:test.db?psow=$psow
+        execsql "
+          PRAGMA key = 'test123';
+          PRAGMA cipher_page_size = $page_sz;
+          PRAGMA journal_mode = $mode;
+          PRAGMA synchronous = $sync;
+          PRAGMA wal_autocheckpoint = 0;
+          PRAGMA cache_size = 0;
+          CREATE TABLE t1(a INTEGER PRIMARY KEY, b);
+          INSERT INTO t1 VALUES(1, zeroblob(500));
+          BEGIN;
+        "
+        for {set i 2} {$i <= $rows} {incr i} {
+          execsql "INSERT INTO t1 VALUES($i, zeroblob(2000))"
+        }
+
+        # do not commit transaction
+
+        forcecopy test.db test2.db
+
+        if {[file exists test.db-wal]} {
+          forcecopy test.db-wal test2.db-wal
+        }
+        if {[file exists test.db-journal]} {
+          forcecopy test.db-journal test2.db-journal
+        }
+        db close
+
+        sqlite_orig db file:test2.db?psow=$psow
+        execsql "
+          PRAGMA key = 'test123';
+          PRAGMA cipher_page_size = $page_sz;
+          PRAGMA integrity_check;
+          SELECT count(*) FROM t1;
+        "
+      } {ok ok 1}
+      db close
+      forcedelete test.db test.db-journal test.db-wal test.db-shm
+      forcedelete test2.db test2.db-journal test2.db-wal test2.db-shm
+
+      # Use of an incorrect key should fail recovery
+      do_test recover-bad-key-$mode-$page_sz-$psow {
+        sqlite_orig db file:test.db?psow=$psow
+        execsql "
+          PRAGMA key = 'test123';
+          PRAGMA cipher_page_size = $page_sz;
+          PRAGMA journal_mode = $mode;
+          PRAGMA synchronous = $sync;
+          PRAGMA wal_autocheckpoint = 0;
+          PRAGMA cache_size = 0;
+          CREATE TABLE t1(a INTEGER PRIMARY KEY, b);
+          INSERT INTO t1 VALUES(1, zeroblob(500));
+          PRAGMA wal_checkpoint = FULL;
+          BEGIN;
+        "
+        for {set i 2} {$i <= $rows} {incr i} {
+          execsql "INSERT INTO t1 VALUES($i, zeroblob(2000))"
+        }
+
+        execsql { COMMIT; }
+
+        forcecopy test.db test2.db
+
+        if {[file exists test.db-wal]} {
+          forcecopy test.db-wal test2.db-wal
+        }
+        if {[file exists test.db-journal]} {
+          forcecopy test.db-journal test2.db-journal
+        }
+        db close
+
+        # unable to open file get error
+        sqlite_orig db file:test2.db?psow=$psow
+        set err [lindex [catchsql "
+          PRAGMA key = 'test';
+          PRAGMA cipher_page_size = $page_sz;
+          SELECT count(*) FROM t1;
+        "] 0]
+
+        set success [execsql "
+          PRAGMA key = 'test123';
+          PRAGMA cipher_page_size = $page_sz;
+          SELECT count(*) FROM t1;
+        "]
+
+        list $err $success
+      } "1 {ok $rows}"
+      db close
+      forcedelete test.db test.db-journal test.db-wal test.db-shm
+      forcedelete test2.db test2.db-journal test2.db-wal test2.db-shm
+
+      # Pages in the journal can be reused. Execute two update statements in one transaction
+      # that will update the same pages. This should cause the frames to be rewritten.
+      do_test recover-reuse-$mode-$page_sz-$psow {
+        sqlite_orig db file:test.db?psow=$psow
+        execsql "
+          PRAGMA key = 'test123';
+          PRAGMA cipher_page_size = $page_sz;
+          PRAGMA journal_mode = $mode;
+          PRAGMA synchronous = $sync;
+          PRAGMA wal_autocheckpoint = 0;
+          PRAGMA cache_size = 0;
+          CREATE TABLE t1(a INTEGER PRIMARY KEY, b);
+          INSERT INTO t1 VALUES(1, zeroblob(500));
+          BEGIN;
+        "
+        for {set i 2} {$i <= $rows} {incr i} {
+          execsql "INSERT INTO t1 VALUES($i, zeroblob(2000))"
+        }
+
+        execsql { COMMIT; }
+        execsql {
+          BEGIN;
+          UPDATE t1 SET b = randomblob(2001);
+          UPDATE t1 SET b = randomblob(2002);
+          COMMIT;
+        }
+
+        forcecopy test.db test2.db
+
+        if {[file exists test.db-wal]} {
+          forcecopy test.db-wal test2.db-wal
+        }
+        if {[file exists test.db-journal]} {
+          forcecopy test.db-journal test2.db-journal
+        }
+        db close
+
+        sqlite_orig db file:test2.db?psow=$psow
+        execsql "
+          PRAGMA key = 'test123';
+          PRAGMA cipher_page_size = $page_sz;
+          PRAGMA integrity_check;
+          SELECT count(*), min(length(b)) FROM t1;
+        "
+
+      } "ok ok $rows 2002"
+      db close
+      forcedelete test.db test.db-journal test.db-wal test.db-shm
+      forcedelete test2.db test2.db-journal test2.db-wal test2.db-shm
+
+    }
+  }
+}
+
+finish_test

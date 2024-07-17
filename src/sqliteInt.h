@@ -5012,13 +5012,6 @@ void sqlite3EndTable(Parse*,Token*,Token*,u32,Select*);
 void sqlite3AddReturning(Parse*,ExprList*);
 int sqlite3ParseUri(const char*,const char*,unsigned int*,
                     sqlite3_vfs**,char**,char **);
-/* BEGIN SQLCIPHER */
-#ifdef SQLITE_HAS_CODEC
-  int sqlite3CodecQueryParameters(sqlite3*,const char*,const char*,int*);
-#else
-# define sqlite3CodecQueryParameters(A,B,C,D) 0
-#endif
-/* END SQLCIPHER */
 Btree *sqlite3DbNameToBtree(sqlite3*,const char*);
 
 #ifdef SQLITE_UNTESTABLE

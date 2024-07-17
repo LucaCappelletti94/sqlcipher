@@ -440,11 +440,6 @@ void sqlite3Pragma(
   Db *pDb;                     /* The specific database being pragmaed */
   Vdbe *v = sqlite3GetVdbe(pParse);  /* Prepared statement */
   const PragmaName *pPragma;   /* The pragma */
-/* BEGIN SQLCIPHER */
-#ifdef SQLITE_HAS_CODEC
-  extern int sqlcipher_codec_pragma(sqlite3*, int, Parse *, const char *, const char *);
-#endif
-/* END SQLCIPHER */
 
   if( v==0 ) return;
   sqlite3VdbeRunOnlyOnce(v);
@@ -512,15 +507,14 @@ void sqlite3Pragma(
     }
     pParse->nErr++;
     pParse->rc = rc;
-
     goto pragma_out;
   }
 
 /* BEGIN SQLCIPHER */
 #ifdef SQLITE_HAS_CODEC
-  if(sqlcipher_codec_pragma(db, iDb, pParse, zLeft, zRight)) { 
-    /* sqlcipher_codec_pragma executes internal */
-    goto pragma_out;
+  {
+  extern int sqlcipher_pragma(sqlite3*, const char*, int, Parse *, const char *, const char *);
+  if(sqlcipher_pragma(db, zDb, iDb, pParse, zLeft, zRight)) { goto pragma_out; } 
   }
 #endif
 /* END SQLCIPHER */  
@@ -2779,55 +2773,6 @@ void sqlite3Pragma(
   }
 #endif
 
-/* BEGIN SQLCIPHER */
-#ifdef SQLITE_HAS_CODEC
-  /* Pragma        iArg
-  ** ----------   ------
-  **  key           0
-  **  rekey         1
-  **  hexkey        2
-  **  hexrekey      3
-  **  textkey       4
-  **  textrekey     5
-  */
-  case PragTyp_KEY: {
-    if( zRight ){
-      char zBuf[40];
-      const char *zKey = zRight;
-      int n;
-      if( pPragma->iArg==2 || pPragma->iArg==3 ){
-        u8 iByte;
-        int i;
-        for(i=0, iByte=0; i<sizeof(zBuf)*2 && sqlite3Isxdigit(zRight[i]); i++){
-          iByte = (iByte<<4) + sqlite3HexToInt(zRight[i]);
-          if( (i&1)!=0 ) zBuf[i/2] = iByte;
-        }
-        zKey = zBuf;
-        n = i/2;
-      }else{
-        n = pPragma->iArg<4 ? sqlite3Strlen30(zRight) : -1;
-      }
-      if( (pPragma->iArg & 1)==0 ){
-        rc = sqlite3_key_v2(db, zDb, zKey, n);
-      }else{
-        rc = sqlite3_rekey_v2(db, zDb, zKey, n);
-      }
-      if( rc==SQLITE_OK && n!=0 ){
-        sqlite3VdbeSetNumCols(v, 1);
-        sqlite3VdbeSetColName(v, 0, COLNAME_NAME, "ok", SQLITE_STATIC);
-        returnSingleText(v, "ok");
-      } else {
-        sqlite3ErrorMsg(pParse, "An error occurred with PRAGMA key or rekey. "
-                                "PRAGMA key requires a key of one or more characters. "
-                                "PRAGMA rekey can only be run on an existing encrypted database. "
-                                "Use sqlcipher_export() and ATTACH to convert encrypted/plaintext databases.");
-        goto pragma_out;
-      }
-    }
-    break;
-  }
-#endif
-/* END SQLCIPHER */
 #if defined(SQLITE_ENABLE_CEROD)
   case PragTyp_ACTIVATE_EXTENSIONS: if( zRight ){
     if( sqlite3StrNICmp(zRight, "cerod-", 6)==0 ){
