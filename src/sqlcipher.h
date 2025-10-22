@@ -88,6 +88,23 @@ struct sqlcipher_provider {
   int (*fips_status)(void *ctx);
   const char* (*get_provider_version)(void *ctx);
   sqlcipher_provider *next;
+  int (*aead_kbkdf)(
+              void *ctx,
+              const unsigned char *key, int key_sz,
+              const unsigned char *context, int context_sz,
+              unsigned char *out);
+   int (*aead_cipher)(
+              void *ctx, int mode,
+              const unsigned char *key, int key_sz,
+              const unsigned char *iv,
+              const unsigned char *aad, int aad_sz,
+              const unsigned char *in, int in_sz,
+              unsigned char *tag,
+              unsigned char *out);
+  int (*get_aead_iv_sz)(void *ctx);
+  int (*get_aead_tag_sz)(void *ctx);
+  const char* (*get_aead_cipher)(void *ctx);
+  int (*self_test)(void *ctx);
 };
 
 /* public interfaces called externally */

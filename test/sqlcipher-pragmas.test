@@ -50,13 +50,13 @@ do_test verify-pragma-cipher-version {
 db close
 file delete -force test.db
 
-# verify the pragma cipher_use_hmac
+# verify the pragma cipher_aead
 # is set to true be default
-do_test verify-pragma-cipher-use-hmac-default {
+do_test verify-pragma-cipher-aead-default {
     sqlite_orig db test.db
     execsql {
         PRAGMA key = 'test';
-        PRAGMA cipher_use_hmac;
+        PRAGMA cipher_aead;
     }
 } {ok 1}
 db close
@@ -64,39 +64,39 @@ file delete -force test.db
 
 # verify the pragma cipher_use_hmac
 # reports the flag turned off
-do_test verify-pragma-cipher-use-hmac-off {
+do_test verify-pragma-cipher-aead-off {
     sqlite_orig db test.db
     execsql {
         PRAGMA key = 'test';
-        PRAGMA cipher_use_hmac = off;
-        PRAGMA cipher_use_hmac;
+        PRAGMA cipher_aead = off;
+        PRAGMA cipher_aead;
     }
 } {ok 0}
 db close
 file delete -force test.db
 
-# verify the pragma default_cipher_use_hmac
+# verify the pragma default_cipher_aead
 # is set to true by default
-do_test verify-pragma-cipher-default-use-hmac-default {
+do_test verify-pragma-cipher-default-aead-default {
     sqlite_orig db test.db
     execsql {
-        PRAGMA cipher_default_use_hmac;
+        PRAGMA cipher_default_aead;
     }
 } {1}
 db close
 file delete -force test.db
 
-# verify the pragma default_cipher_use_hmac
+# verify the pragma default_cipher_aead
 # reports the flag turned off
-do_test verify-pragma-cipher-default-use-hmac-off {
+do_test verify-pragma-cipher-default-aead-off {
     sqlite_orig db test.db
     execsql {
-        PRAGMA cipher_default_use_hmac = off;
-        PRAGMA cipher_default_use_hmac;
-        -- Be sure to turn cipher_default_use_hmac
+        PRAGMA cipher_default_aead = off;
+        PRAGMA cipher_default_aead;
+        -- Be sure to turn cipher_default_aead
         -- back on or it will break later tests 
         -- (it's a global flag)
-        PRAGMA cipher_default_use_hmac = ON;
+        PRAGMA cipher_default_aead = ON;
     }
 } {0}
 db close
@@ -152,15 +152,25 @@ do_test verify-pragma-kdf-iter-reports-value-changed {
 db close
 file delete -force test.db
 
-# verify the pragma fast_kdf_iter
+# verify the pragma cipher_default_hmac_fast_kdf
+# reports the default value
+do_test verify-pragma-default-hmac-fast-kdf-reports-default {
+    sqlite_orig db :memory:
+    execsql {
+        PRAGMA cipher_default_hmac_fast_kdf;
+    }
+} {0}
+db close
+
+# verify the pragma hmac_fast_kdf
 # reports the default value
 do_test verify-pragma-fast-kdf-iter-reports-default {
     sqlite_orig db test.db
     execsql {
         PRAGMA key = 'test';
-        PRAGMA fast_kdf_iter;
+        PRAGMA cipher_hmac_fast_kdf;
     }
-} {ok 2}
+} {ok 0}
 db close
 file delete -force test.db
 
@@ -251,18 +261,6 @@ do_test verify-cipher-store-pass-deprecated {
         PRAGMA cipher_store_pass = 1;
     }
 } {ok {PRAGMA cipher_store_pass is deprecated, please remove from use}}
-db close
-file delete -force test.db
-
-# verify the pragma cipher
-# reports the default value
-if_built_with_openssl verify-pragma-cipher-default {
-    sqlite_orig db test.db
-    execsql {
-        PRAGMA key = 'test';
-        PRAGMA cipher;
-    }
-} {ok AES-256-CBC}
 db close
 file delete -force test.db
 
@@ -387,20 +385,45 @@ do_test verify-pragma-cipher-default-kdf-algorithm {
 db close
 file delete -force test.db
 
-if_built_with_openssl verify-default-cipher {
+# verify the pragma cipher
+# reports the default value
+if_built_with_openssl verify-pragma-cipher-default {
     sqlite_orig db test.db
     execsql {
         PRAGMA key='test';
+        PRAGMA cipher;
+    }
+} {ok id-aes256-GCM}
+db close
+file delete -force test.db
+
+if_built_with_openssl verify-legacy-cipher {
+    sqlite_orig db test.db
+    execsql {
+        PRAGMA key='test';
+        PRAGMA cipher_compatibility = 4;
         PRAGMA cipher;
     }
 } {ok AES-256-CBC}
 db close
 file delete -force test.db
 
+
 if_built_with_libtomcrypt verify-default-cipher {
     sqlite_orig db test.db
     execsql {
         PRAGMA key='test';
+        PRAGMA cipher;
+    }
+} {ok aes-256-gcm}
+db close
+file delete -force test.db
+
+if_built_with_libtomcrypt verify-legacy-cipher {
+    sqlite_orig db test.db
+    execsql {
+        PRAGMA key='test';
+        PRAGMA cipher_compatibility = 4;
         PRAGMA cipher;
     }
 } {ok aes-256-cbc}
@@ -433,7 +456,7 @@ do_test verify-cipher_settings_default {
         PRAGMA key = 'test';
         PRAGMA cipher_settings;
     }
-} {ok {PRAGMA kdf_iter = 256000;} {PRAGMA cipher_page_size = 4096;} {PRAGMA cipher_use_hmac = 1;} {PRAGMA cipher_plaintext_header_size = 0;} {PRAGMA cipher_hmac_algorithm = HMAC_SHA512;} {PRAGMA cipher_kdf_algorithm = PBKDF2_HMAC_SHA512;}}
+} {ok {PRAGMA kdf_iter = 256000;} {PRAGMA cipher_page_size = 4096;} {PRAGMA cipher_aead = 1;} {PRAGMA cipher_use_hmac = 0;} {PRAGMA cipher_hmac_fast_kdf = 0;} {PRAGMA cipher_plaintext_header_size = 0;} {PRAGMA cipher_hmac_algorithm = HMAC_SHA512;} {PRAGMA cipher_kdf_algorithm = PBKDF2_HMAC_SHA512;}}
 db close
 file delete -force test.db
 
@@ -444,7 +467,7 @@ do_test verify-cipher_settings_v1 {
         PRAGMA cipher_compatibility = 1;
         PRAGMA cipher_settings;
     }
-} {ok {PRAGMA kdf_iter = 4000;} {PRAGMA cipher_page_size = 1024;} {PRAGMA cipher_use_hmac = 0;} {PRAGMA cipher_plaintext_header_size = 0;} {PRAGMA cipher_hmac_algorithm = HMAC_SHA1;} {PRAGMA cipher_kdf_algorithm = PBKDF2_HMAC_SHA1;}} 
+} {ok {PRAGMA kdf_iter = 4000;} {PRAGMA cipher_page_size = 1024;} {PRAGMA cipher_aead = 0;} {PRAGMA cipher_use_hmac = 0;} {PRAGMA cipher_hmac_fast_kdf = 0;} {PRAGMA cipher_plaintext_header_size = 0;} {PRAGMA cipher_hmac_algorithm = HMAC_SHA1;} {PRAGMA cipher_kdf_algorithm = PBKDF2_HMAC_SHA1;}} 
 db close
 file delete -force test.db
 
@@ -453,9 +476,9 @@ do_test verify-cipher_default_settings_v1 {
     execsql {
         PRAGMA cipher_default_compatibility = 1;
         PRAGMA cipher_default_settings;
-        PRAGMA cipher_default_compatibility = 4;
+        PRAGMA cipher_default_compatibility = 5;
     }
-} {{PRAGMA cipher_default_kdf_iter = 4000;} {PRAGMA cipher_default_page_size = 1024;} {PRAGMA cipher_default_use_hmac = 0;} {PRAGMA cipher_default_plaintext_header_size = 0;} {PRAGMA cipher_default_hmac_algorithm = HMAC_SHA1;} {PRAGMA cipher_default_kdf_algorithm = PBKDF2_HMAC_SHA1;}} 
+} {{PRAGMA cipher_default_kdf_iter = 4000;} {PRAGMA cipher_default_page_size = 1024;} {PRAGMA cipher_default_aead = 0;} {PRAGMA cipher_default_use_hmac = 0;} {PRAGMA cipher_default_hmac_fast_kdf = 0;} {PRAGMA cipher_default_plaintext_header_size = 0;} {PRAGMA cipher_default_hmac_algorithm = HMAC_SHA1;} {PRAGMA cipher_default_kdf_algorithm = PBKDF2_HMAC_SHA1;}} 
 db close
 file delete -force test.db
 
@@ -464,7 +487,7 @@ do_test verify-cipher_default_settings_default {
     execsql {
         PRAGMA cipher_default_settings;
     }
-} {{PRAGMA cipher_default_kdf_iter = 256000;} {PRAGMA cipher_default_page_size = 4096;} {PRAGMA cipher_default_use_hmac = 1;} {PRAGMA cipher_default_plaintext_header_size = 0;} {PRAGMA cipher_default_hmac_algorithm = HMAC_SHA512;} {PRAGMA cipher_default_kdf_algorithm = PBKDF2_HMAC_SHA512;}}
+} {{PRAGMA cipher_default_kdf_iter = 256000;} {PRAGMA cipher_default_page_size = 4096;} {PRAGMA cipher_default_aead = 1;} {PRAGMA cipher_default_use_hmac = 0;} {PRAGMA cipher_default_hmac_fast_kdf = 0;} {PRAGMA cipher_default_plaintext_header_size = 0;} {PRAGMA cipher_default_hmac_algorithm = HMAC_SHA512;} {PRAGMA cipher_default_kdf_algorithm = PBKDF2_HMAC_SHA512;}}
 db close
 file delete -force test.db
 

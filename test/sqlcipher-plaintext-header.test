@@ -116,9 +116,32 @@ db close
 file delete -force test.db
 
 # verify that a raw key with an invalid salt will not work to
-# open an existing database.
+# open an existing database when using legacy fast kdf mode
 # should cause hmac failure due to invalid generated HMAC key
-do_test test-raw-key-with-invalid-salt-spec {
+do_test test-raw-key-with-invalid-salt-spec-fast-kdf {
+  sqlite_orig db test.db
+  execsql "
+    PRAGMA key = $hexkeyspec;
+    PRAGMA cipher_compatibility = 4;
+    CREATE TABLE t1(a,b);
+    INSERT INTO t1(a,b) VALUES (1,2);
+  "
+  db close
+
+  sqlite_orig db test.db
+  catchsql {
+    PRAGMA key="x'98483C6EB40B6C31A448C22A66DED3B5E5E8D5119CAC8327B655C8B5C483648100000000000000000000000000000001'";
+    PRAGMA cipher_compatibility = 4;
+    SELECT count(*) FROM t1;
+  } 
+} {1 {file is not a database}}
+db close
+file delete -force test.db
+
+# verify that when using AEAD with a raw key, the database can be read
+# even with an invalid salt because salt is not used for KBKDF in the
+# new version
+do_test test-raw-key-with-invalid-salt-spec-aead {
   sqlite_orig db test.db
   execsql "
     PRAGMA key = $hexkeyspec;
@@ -132,7 +155,7 @@ do_test test-raw-key-with-invalid-salt-spec {
     PRAGMA key="x'98483C6EB40B6C31A448C22A66DED3B5E5E8D5119CAC8327B655C8B5C483648100000000000000000000000000000001'";
     SELECT count(*) FROM t1;
   } 
-} {1 {file is not a database}}
+} {0 {ok 1}}
 db close
 file delete -force test.db
 
@@ -143,6 +166,7 @@ do_test test-raw-key-with-invalid-salt-spec-no-hmac {
   sqlite_orig db test.db
   execsql "
     PRAGMA key = $hexkeyspec;
+    PRAGMA cipher_compatibility = 4;
     PRAGMA cipher_use_hmac = OFF;
     CREATE TABLE t1(a,b);
     INSERT INTO t1(a,b) VALUES (1,2);
@@ -152,6 +176,7 @@ do_test test-raw-key-with-invalid-salt-spec-no-hmac {
   sqlite_orig db test.db
   execsql {
     PRAGMA key="x'98483C6EB40B6C31A448C22A66DED3B5E5E8D5119CAC8327B655C8B5C483648100000000000000000000000000000001'";
+    PRAGMA cipher_compatibility = 4;
     PRAGMA cipher_use_hmac = OFF;
     SELECT count(*) FROM t1;
   }
@@ -218,7 +243,7 @@ file delete -force test.db
 # when using a standard mode database and 32 byte
 # plaintext header, ensure that bytes 16 - 19
 # corresponding to the page size and file versions, and reserve size
-# are readable and equal to 1024, 1, 1, and 80 respectively
+# are readable and equal to 1024, 1, 1, and 48 respectively
 do_test test-plaintext-header-journal-delete-mode-readable {
   sqlite_orig db test.db
   execsql {
@@ -228,7 +253,7 @@ do_test test-plaintext-header-journal-delete-mode-readable {
     INSERT INTO t1(a,b) VALUES (1,2);
   }
   db close
-  string equal [hexio_read test.db 16 5] "1000010150"
+  string equal [hexio_read test.db 16 5] "1000010130"
 } {1}
 file delete -force test.db
 
@@ -236,7 +261,7 @@ file delete -force test.db
 # when using a WAL mode database and 32 byte
 # plaintext header, ensure that bytes 16 - 19
 # corresponding to the page size and file versions, and reserve size
-# are readable and equal to 1024, 2, 2 and 80 respectively
+# are readable and equal to 1024, 2, 2 and 48 respectively
 do_test test-plaintext-header-journal-wal-mode-readable {
   sqlite_orig db test.db
   execsql {
@@ -247,7 +272,7 @@ do_test test-plaintext-header-journal-wal-mode-readable {
     INSERT INTO t1(a,b) VALUES (1,2);
   }
   db close
-  string equal [hexio_read test.db 16 5] "1000020250"
+  string equal [hexio_read test.db 16 5] "1000020230"
 } {1}
 file delete -force test.db
 
@@ -358,7 +383,7 @@ do_test test-plaintext-header-migrate-journal-delete {
     SELECT count(*) FROM t1;
   "]
 
-} {01010101010101010101010101010101 53514C69746520666F726D61742033001000010150 {ok 1}}
+} {01010101010101010101010101010101 53514C69746520666F726D61742033001000010130 {ok 1}}
 db close
 file delete -force test.db
 
@@ -398,7 +423,7 @@ do_test test-plaintext-header-migrate-journal-wal {
     PRAGMA journal_mode;
   "]
 
-} {01010101010101010101010101010101 {ok 1 wal 0 1 1} 53514C69746520666F726D61742033001000020250 {ok 1 wal}}
+} {01010101010101010101010101010101 {ok 1 wal 0 1 1} 53514C69746520666F726D61742033001000020230 {ok 1 wal}}
 db close
 file delete -force test.db
 
@@ -441,7 +466,7 @@ do_test test-plaintext-header-migrate-journal-wal-string-key-random-salt {
   "]
 
 
-} {{ok 1 wal 0 1 1} 53514C69746520666F726D61742033001000020250 {ok 1 wal}}
+} {{ok 1 wal 0 1 1} 53514C69746520666F726D61742033001000020230 {ok 1 wal}}
 db close
 file delete -force test.db
 

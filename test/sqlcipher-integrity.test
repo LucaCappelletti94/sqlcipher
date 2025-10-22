@@ -85,6 +85,7 @@ do_test nohmac-not-tamper-resistent {
   execsql {
     PRAGMA key = 'testkey';
     PRAGMA cipher_use_hmac = OFF;
+    PRAGMA cipher_aead = OFF;
     PRAGMA cipher_page_size = 1024;
     CREATE table t1(a,b);
     BEGIN;
@@ -109,6 +110,7 @@ do_test nohmac-not-tamper-resistent {
   execsql {
     PRAGMA key = 'testkey';
     PRAGMA cipher_use_hmac = OFF;
+    PRAGMA cipher_aead = OFF;
     PRAGMA cipher_page_size = 1024;
     SELECT count(*) FROM t1;
   }
@@ -222,7 +224,7 @@ do_test version-1-integrity-check-fail-no-hmac {
     PRAGMA cipher_compatibility = 1;
     PRAGMA cipher_integrity_check;
   } 
-} {ok {HMAC is not enabled, unable to integrity check}}
+} {ok {Authentication is not enabled, unable to integrity check}}
 db close
 file delete -force test.db
 
@@ -282,9 +284,9 @@ do_test version-3-integrity-check-invalid {
 db close
 file delete -force test.db
 
-# try cipher_integrity_check on a valid version 4 database
-do_test version-4-integrity-check-valid {
-  file copy -force $sampleDir/sqlcipher-4.0-testkey.db test.db
+# try cipher_integrity_check on a valid database
+do_test current-version-integrity-check-valid {
+  file copy -force $sampleDir/sqlcipher-5.0-testkey.db test.db
   sqlite_orig db test.db
   execsql {
     PRAGMA key = 'testkey';
@@ -294,9 +296,9 @@ do_test version-4-integrity-check-valid {
 db close
 file delete -force test.db
 
-# try cipher_integrity_check on a corrupted version 4 database
-do_test version-4-integrity-check-invalid {
-  file copy -force $sampleDir/sqlcipher-4.0-testkey.db test.db
+# try cipher_integrity_check on a corrupted database
+do_test current-version-integrity-check-invalid {
+  file copy -force $sampleDir/sqlcipher-5.0-testkey.db test.db
   # corrupt page data 
   hexio_write test.db 5120 000000
   # corrupt iv 
@@ -312,16 +314,16 @@ do_test version-4-integrity-check-invalid {
 db close
 file delete -force test.db
 
-# try cipher_integrity_check on a corrupted version 4 database
-do_test version-4-integrity-check-invalid-last-page {
-  file copy -force $sampleDir/sqlcipher-4.0-testkey.db test.db
-  hexio_write test.db 978944 0000
+# try cipher_integrity_check on a corrupted database
+do_test current-version-integrity-check-invalid-last-page {
+  file copy -force $sampleDir/sqlcipher-5.0-testkey.db test.db
+  hexio_write test.db 970752 0000
   sqlite_orig db test.db
   execsql {
     PRAGMA key = 'testkey';
     PRAGMA cipher_integrity_check;
   } 
-} {ok {page 240 has an invalid size of 2 bytes (expected 4096 bytes)}}
+} {ok {page 238 has an invalid size of 2 bytes (expected 4096 bytes)}}
 db close
 file delete -force test.db
 
@@ -341,7 +343,7 @@ do_test integrity-check-plaintext-header {
     PRAGMA cipher_integrity_check;
   }]
 
-  lappend rc [string equal [hexio_read test.db 16 5] "1000010150"]
+  lappend rc [string equal [hexio_read test.db 16 5] "1000010130"]
   
   hexio_write test.db 120 000000
   hexio_write test.db 5120 000000

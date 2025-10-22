@@ -35,6 +35,23 @@
 #include "sqlcipher.h"
 #include <tomcrypt.h>
 
+/*
+ * This is a reference implementation of the sqlcipher_provider interface
+ * for LibTomCrypt. It is intended to be absolutely minimal, i.e.  small,
+ * simple, easily auditable, and infrequently changed. This makes it a
+ * good starting place for anyone writing their own provider. Note that this
+ * implementation is intentionally non-optimized and raw performance
+ * is deliberately not a goal for this file. Please don't send patches/PRs or
+ * open issues proposing performance changes to this file.
+ *
+ * If your use case requires a faster or more heavily optimized provider
+ * you are welcome and encouraged to write one using this as a template and
+ * referring to the sqlcipher_provider definition in sqlcipher.h. At compile time,
+ * set it as the default provider with SQLCIPHER_CRYPTO_CUSTOM and supply
+ * the provider source using EXTRA_SRC.
+ */
+
+
 #define FORTUNA_MAX_SZ 32
 static prng_state prng;
 static volatile unsigned int ltc_init = 0;
@@ -390,6 +407,254 @@ static int sqlcipher_ltc_fips_status(void *ctx) {
   return 0;
 }
 
+#define LTC_AEAD_CIPHER "aes"
+#define LTC_AEAD_IV_SZ 12
+#define LTC_AEAD_TAG_SZ 16
+#define LTC_AEAD_BLOCK_SZ 16
+
+/* SQLCipher's AEAD implementation uses counter based key-based key derivation to
+ * generate a key for each page from the provided key material.
+ * This function implements a SP 800-108 counter mode KDF using AES-256-CMAC
+ * modeled after XAES-256-GCM. Specifically it uses a 16 bit counter size, 'x' label,
+ * a 96 bit context, and omits the L field because the output is a fixed size. 
+ * see:
+ *   https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-108r1-upd1.pdf
+ *   https://github.com/C2SP/C2SP/blob/main/XAES-256-GCM.md
+ */
+static int sqlcipher_ltc_aead_kbkdf(
+  void *ctx,
+  const unsigned char *key, int key_sz,
+  const unsigned char *context, int context_sz,
+  unsigned char *out
+){
+  int cipher_idx, i, rc = 0; 
+  unsigned long out_sz = LTC_AEAD_BLOCK_SZ;
+  omac_state *omac = NULL;
+  
+  /* SP 800-108 fixed fields */
+  unsigned char label = 0x58;
+  unsigned char separator = 0x00;
+  unsigned char ii[4];
+  int n = key_sz / 16;
+
+  if((cipher_idx = find_cipher(LTC_AEAD_CIPHER)) == -1) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: find_cipher failed", __func__);
+    return SQLITE_ERROR;
+  }
+
+  if(!(omac = sqlcipher_malloc(sizeof(omac_state)))) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: failed to allocate omac_state", __func__);
+    goto error;
+  }
+ 
+  for(i = 1; i <= n; i++) {
+    sqlite3Put4byte(ii, i); /* iterator to big endian */
+    if((rc = omac_init(omac, cipher_idx, key, key_sz)) != CRYPT_OK) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: omac_init failed %d", __func__, rc);
+      goto error;
+    }
+
+    if((rc = omac_process(omac, ii+2, 2)) != CRYPT_OK) { /* use 16 bit (2 byte) counter length */
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: omac_process(i) failed %d", __func__, rc);
+      goto error;
+    }
+    if((rc = omac_process(omac, &label, sizeof(label))) != CRYPT_OK) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: omac_process(label) failed %d", __func__, rc);
+      goto error;
+    }
+    if((rc = omac_process(omac, &separator, sizeof(separator))) != CRYPT_OK) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: omac_process(separator) failed %d", __func__, rc);
+      goto error;
+    }
+    if((rc = omac_process(omac, context, context_sz)) != CRYPT_OK) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: omac_process(context) failed %d", __func__, rc);
+      goto error;
+    }
+
+    /* L parameter (output length) is be omitted entirely because the output lenght is fixed */
+
+    if((rc = omac_done(omac, out + (i - 1) * LTC_AEAD_BLOCK_SZ, &out_sz)) != CRYPT_OK) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: omac_done failed %d", __func__, rc);
+      goto error;
+    } 
+  }
+
+  rc = SQLITE_OK;
+  goto cleanup;
+
+error:
+  rc = SQLITE_ERROR;
+cleanup:
+  if(omac) sqlcipher_free(omac, sizeof(omac_state));
+  return rc;
+}
+
+
+static int sqlcipher_ltc_aead_cipher(
+  void *ctx, int mode,
+  const unsigned char *key, int key_sz,
+  const unsigned char *iv,
+  const unsigned char *aad, int aad_sz,
+  const unsigned char *in, int in_sz,
+  unsigned char *tag,
+  unsigned char *out) {
+
+  int rc, cipher_idx;
+  unsigned char tag_out[LTC_AEAD_TAG_SZ];
+  unsigned long tag_sz = LTC_AEAD_TAG_SZ;
+  gcm_state *gcm = NULL;
+
+  if((cipher_idx = find_cipher(LTC_AEAD_CIPHER)) == -1) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: find_cipher failed", __func__);
+    return SQLITE_ERROR;
+  }
+  if(!(gcm = sqlcipher_malloc(sizeof(gcm_state)))) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: failed to allocate gcm_state", __func__);
+    goto error;
+  }
+  if ((rc = gcm_init(gcm, cipher_idx, key, key_sz)) != CRYPT_OK) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s gcm_init failed %d", __func__, rc);
+    goto error;
+  }
+  if ((rc = gcm_add_iv(gcm, iv, LTC_AEAD_IV_SZ)) != CRYPT_OK) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s gcm_add_iv failed %d", __func__, rc);
+    goto error;
+  }
+  if ((rc = gcm_add_aad(gcm, aad, aad_sz)) != CRYPT_OK) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s gcm_add_aad failed %d", __func__, rc);
+    goto error;
+  }
+  if(mode == SQLCIPHER_ENCRYPT) {
+    if ((rc = gcm_process(gcm, (unsigned char *)in, in_sz, out, GCM_ENCRYPT)) != CRYPT_OK) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s gcm_process failed for encryption %d", __func__, rc);
+      goto error;
+    }
+    if ((rc = gcm_done(gcm, tag, &tag_sz)) != CRYPT_OK) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s gcm_done failed %d", __func__, rc);
+      goto error;
+    }
+  } else {
+    if ((rc = gcm_process(gcm, out, in_sz, (unsigned char *)in, GCM_DECRYPT)) != CRYPT_OK) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s gcm_process failed for decryption %d", __func__, rc);
+      goto error;
+    }
+    if ((rc = gcm_done(gcm, tag_out, &tag_sz)) != CRYPT_OK) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s gcm_done failed %d", __func__, rc);
+      goto error;
+    }
+    /* perform manual tag verification, LTC does not do this internally in gcm_done */
+    if(sqlcipher_memcmp(tag, tag_out, LTC_AEAD_TAG_SZ) != 0) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s gcm tag verification failed for decryption", __func__);
+      goto error;
+    }
+  }
+
+  rc = SQLITE_OK;
+  goto cleanup;
+
+error:
+  rc = SQLITE_ERROR;
+
+cleanup:
+  sqlcipher_memset(tag_out, 0, LTC_AEAD_TAG_SZ);
+  if(gcm) sqlcipher_free(gcm, sizeof(gcm_state));
+  return rc;
+}
+
+static int sqlcipher_ltc_get_aead_iv_sz(void *ctx) {
+  return LTC_AEAD_IV_SZ;
+}
+
+static int sqlcipher_ltc_get_aead_tag_sz(void *ctx) {
+  return LTC_AEAD_TAG_SZ;
+}
+
+static const char* sqlcipher_ltc_get_aead_cipher(void *ctx) {
+  return "aes-256-gcm";
+}
+
+/* SQLCipher's v5 construct is similar to XAES-256-GCM split across two separate KDF and GCM operations. We can
+ * self-test proper operation using the official KAT:
+ *   https://github.com/C2SP/C2SP/blob/main/XAES-256-GCM.md
+ * This test runs the input key and first 96 bits of the 192 bit IV through the KDF function, then 
+ * uses the output key with AES-256-GCM and the second 96 bits as the GCM IV. */
+static int sqlcipher_ltc_self_test(void *ctx) {
+  int rc;
+
+  unsigned char K[32] = {
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01
+  };
+
+  unsigned char Kx[32] = {
+    0xc8, 0x61, 0x2c, 0x9e, 0xd5, 0x3f, 0xe4, 0x3e,
+    0x8e, 0x00, 0x5b, 0x82, 0x8a, 0x16, 0x31, 0xa0,
+    0xbb, 0xcb, 0x6a, 0xb2, 0xf4, 0x65, 0x14, 0xec,
+    0x4f, 0x43, 0x9f, 0xcf, 0xd0, 0xfa, 0x96, 0x9b
+  };
+
+  /* ASCII "ABCDEFGHIJKLMNOPQRSTUVWX" where first 12 is KBKDF context, next 12 is GCM IV */
+  unsigned char N[24] = {
+      0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
+      0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f, 0x50,
+      0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58
+  };
+
+  /* ASCII "XAES-256-GCM" */
+  unsigned char PT[12] = {
+    0x58, 0x41, 0x45, 0x53, 0x2d, 0x32, 0x35, 0x36,
+    0x2d, 0x47, 0x43, 0x4d
+  };
+
+  const unsigned char CT[28] = {
+    0xce, 0x54, 0x6e, 0xf6, 0x3c, 0x9c, 0xc6, 0x07,
+    0x65, 0x92, 0x36, 0x09, 0xb3, 0x3a, 0x9a, 0x19,
+    0x74, 0xe9, 0x6e, 0x52, 0xda, 0xf2, 0xfc, 0xf7,
+    0x07, 0x5e, 0x22, 0x71
+  };
+
+  unsigned char Kx_out[32];
+  unsigned char CT_out[28];
+ 
+  if((rc = sqlcipher_ltc_aead_kbkdf(
+    ctx,
+    K, sizeof(K),
+    N, sizeof(N) / 2,
+    Kx_out
+  )) != SQLITE_OK) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: kbkdf failed %d", __func__, rc);
+    return rc;
+  }
+            
+  if((rc = sqlcipher_ltc_aead_cipher(
+      ctx, SQLCIPHER_ENCRYPT,
+      Kx_out, sizeof(Kx_out),
+      N + (sizeof(N)/2),
+      NULL, 0, /* No AEAD for this test */
+      PT, sizeof(PT),
+      CT_out + sizeof(PT), /* 16 byte tag goes at the end */
+      CT_out
+    )) != SQLITE_OK
+  ) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: aead_cipher failed %d", __func__, rc);
+    return rc;
+  } 
+
+  if(memcmp(Kx, Kx_out, sizeof(Kx)) != 0) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: KAT subkey mismatch", __func__);
+    return SQLITE_ERROR;
+  }
+
+  if(memcmp(CT, CT_out, sizeof(CT)) != 0) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: KAT ciphertext mismatch", __func__);
+    return SQLITE_ERROR;
+  }
+
+  return SQLITE_OK;
+}
+
 int sqlcipher_ltc_setup(sqlcipher_provider *p) {
   p->init = NULL;
   p->shutdown = NULL;
@@ -408,6 +673,12 @@ int sqlcipher_ltc_setup(sqlcipher_provider *p) {
   p->add_random = sqlcipher_ltc_add_random;
   p->fips_status = sqlcipher_ltc_fips_status;
   p->get_provider_version = sqlcipher_ltc_get_provider_version;
+  p->aead_kbkdf = sqlcipher_ltc_aead_kbkdf;
+  p->aead_cipher = sqlcipher_ltc_aead_cipher;
+  p->get_aead_iv_sz = sqlcipher_ltc_get_aead_iv_sz;
+  p->get_aead_tag_sz = sqlcipher_ltc_get_aead_tag_sz;
+  p->get_aead_cipher = sqlcipher_ltc_get_aead_cipher;
+  p->self_test = sqlcipher_ltc_self_test;
   return SQLITE_OK;
 }
 

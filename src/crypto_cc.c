@@ -31,10 +31,16 @@
 /* BEGIN SQLCIPHER */
 #ifdef SQLITE_HAS_CODEC
 #ifdef SQLCIPHER_CRYPTO_CC
+
+#ifndef SQLCIPHER_CRYPTO_CC_FORCE
+#error "The CommonCrypto provider is deprecated, unsupported, and won't work with SQLCipher v5 AEAD. To use anyway, set -DSQLCIPHER_CRYPTO_CC_FORCE to override and disable AEAD before use." 
+#endif
+
 #include "sqlcipher.h"
 #include <CommonCrypto/CommonCrypto.h>
 #include <Security/SecRandom.h>
 #include <CoreFoundation/CoreFoundation.h>
+
 
 int sqlcipher_cc_setup(sqlcipher_provider *p);
 
@@ -215,6 +221,13 @@ int sqlcipher_cc_setup(sqlcipher_provider *p) {
   p->add_random = sqlcipher_cc_add_random;
   p->fips_status = sqlcipher_cc_fips_status;
   p->get_provider_version = sqlcipher_cc_get_provider_version;
+  p->aead_kbkdf = NULL;
+  p->aead_cipher = NULL;
+  p->get_aead_iv_sz = NULL;
+  p->get_aead_tag_sz = NULL;
+  p->get_aead_cipher = NULL;
+  p->self_test = NULL;
+  
   return SQLITE_OK;
 }
 

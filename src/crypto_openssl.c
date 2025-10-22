@@ -39,6 +39,9 @@
 #include <openssl/objects.h> /* amalgamator: dontcache */
 #include <openssl/hmac.h> /* amalgamator: dontcache */
 #include <openssl/err.h> /* amalgamator: dontcache */
+#include <openssl/kdf.h> /* amalgamator: dontcache */
+#include <openssl/params.h> /* amalgamator: dontcache */
+#include <openssl/core_names.h> /* amalgamator: dontcache */
 
 /*
  * This is a reference implementation of the sqlcipher_provider interface
@@ -55,8 +58,6 @@
  * set it as the default provider with SQLCIPHER_CRYPTO_CUSTOM and supply
  * the provider source using EXTRA_SRC.
  */
-
-static unsigned int openssl_init_count = 0;
 
 static void sqlcipher_openssl_log_errors() {
     unsigned long err = 0;
@@ -82,44 +83,11 @@ static int sqlcipher_openssl_add_random(void *ctx, const void *buffer, int lengt
 
 #define OPENSSL_CIPHER EVP_aes_256_cbc()
 
-/* activate and initialize sqlcipher. Most importantly, this will automatically
-   intialize OpenSSL's EVP system if it hasn't already be externally. Note that 
-   this function may be called multiple times as sqlcipher databases are intiialized. 
-   Thus it performs some basic counting to ensure that only the last and final
-   sqlcipher_openssl_deactivate() will free the EVP structures. 
-*/
 static int sqlcipher_openssl_activate(void *ctx) {
-  /* initialize openssl and increment the internal init counter
-     but only if it hasn't been initalized outside of SQLCipher by this program 
-     e.g. on startup */
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: entering SQLCIPHER_MUTEX_PROVIDER_ACTIVATE", __func__);
-  sqlite3_mutex_enter(sqlcipher_mutex(SQLCIPHER_MUTEX_PROVIDER_ACTIVATE));
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: entered SQLCIPHER_MUTEX_PROVIDER_ACTIVATE", __func__);
-
-#if (defined(OPENSSL_VERSION_NUMBER) && OPENSSL_VERSION_NUMBER < 0x10100000L)
-  ERR_load_crypto_strings();
-#endif
-
-  openssl_init_count++; 
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: leaving SQLCIPHER_MUTEX_PROVIDER_ACTIVATE", __func__);
-  sqlite3_mutex_leave(sqlcipher_mutex(SQLCIPHER_MUTEX_PROVIDER_ACTIVATE));
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: left SQLCIPHER_MUTEX_PROVIDER_ACTIVATE", __func__);
   return SQLITE_OK;
 }
 
-/* deactivate SQLCipher, most imporantly decremeting the activation count and
-   freeing the EVP structures on the final deactivation to ensure that 
-   OpenSSL memory is cleaned up */
 static int sqlcipher_openssl_deactivate(void *ctx) {
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: entering SQLCIPHER_MUTEX_PROVIDER_ACTIVATE", __func__);
-  sqlite3_mutex_enter(sqlcipher_mutex(SQLCIPHER_MUTEX_PROVIDER_ACTIVATE));
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: entered SQLCIPHER_MUTEX_PROVIDER_ACTIVATE", __func__);
-
-  openssl_init_count--;
-
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: leaving SQLCIPHER_MUTEX_PROVIDER_ACTIVATE", __func__);
-  sqlite3_mutex_leave(sqlcipher_mutex(SQLCIPHER_MUTEX_PROVIDER_ACTIVATE));
-  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: left SQLCIPHER_MUTEX_PROVIDER_ACTIVATE", __func__);
   return SQLITE_OK;
 }
 
@@ -128,11 +96,7 @@ static const char* sqlcipher_openssl_get_provider_name(void *ctx) {
 }
 
 static const char* sqlcipher_openssl_get_provider_version(void *ctx) {
-#if (defined(OPENSSL_VERSION_NUMBER) && OPENSSL_VERSION_NUMBER < 0x10100000L)
-  return OPENSSL_VERSION_TEXT;
-#else
   return OpenSSL_version(OPENSSL_VERSION);
-#endif
 }
 
 /* generate a defined number of random bytes */
@@ -364,7 +328,7 @@ cleanup:
 }
 
 static const char* sqlcipher_openssl_get_cipher(void *ctx) {
-  return OBJ_nid2sn(EVP_CIPHER_nid(OPENSSL_CIPHER));
+  return EVP_CIPHER_get0_name(OPENSSL_CIPHER);
 }
 
 static int sqlcipher_openssl_get_key_sz(void *ctx) {
@@ -407,6 +371,254 @@ static int sqlcipher_openssl_fips_status(void *ctx) {
   return 0;
 }
 
+#define OPENSSL_AEAD_CIPHER EVP_aes_256_gcm()
+#define OPENSSL_AEAD_IV_SZ 12
+#define OPENSSL_AEAD_TAG_SZ 16
+
+
+/* SQLCipher's AEAD implementation uses counter based  key-based key derivation to
+ * generate a key for each page from the provided key material.
+ * This function implements a SP 800-108 counter mode KDF using AES-256-CMAC
+ * modeled after XAES-256-GCM. Specifically it uses a 16 bit counter size, 'x' label,
+ * a 96 bit context, and omits the L field because the output is a fixed size. 
+ * see:
+ *   https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-108r1-upd1.pdf
+ *   https://github.com/C2SP/C2SP/blob/main/XAES-256-GCM.md
+ */
+static int sqlcipher_openssl_aead_kbkdf(
+  void *ctx,
+  const unsigned char *key, int key_sz,
+  const unsigned char *context, int context_sz,
+  unsigned char *out
+){
+  int rc = 0;
+  unsigned char label = 0x58;
+  EVP_KDF *kdf = NULL;
+  EVP_KDF_CTX *kctx = NULL;
+  int r = 16, use_l = 0;
+
+  OSSL_PARAM params[] = {
+    OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_MAC, "CMAC", 0), 
+    OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_MODE, "COUNTER", 0), 
+    OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_CIPHER, "AES-256-CBC", 0),
+    OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY, (void *)key, key_sz),
+    OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SALT, &label, sizeof(label)),
+    OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO, (void *)context, context_sz),
+    OSSL_PARAM_construct_int(OSSL_KDF_PARAM_KBKDF_R, &r), /* 16 bit (2 byte) counter */
+    OSSL_PARAM_construct_int(OSSL_KDF_PARAM_KBKDF_USE_L, &use_l), /* omit L (output lenght) because it is fixed size */
+    OSSL_PARAM_construct_end()
+  };
+
+  if(!(kdf = EVP_KDF_fetch(NULL, "KBKDF", NULL))) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_KDF_fetch failed", __func__);
+    sqlcipher_openssl_log_errors();
+    goto error;
+  }
+
+  if(!(kctx = EVP_KDF_CTX_new(kdf))) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_KDF_CTX_new failed", __func__);
+    sqlcipher_openssl_log_errors();
+    goto error;
+  }
+
+  if(!(rc = EVP_KDF_derive(kctx, out, key_sz, params))) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_KDF_derive failed %d", __func__, rc);
+    sqlcipher_openssl_log_errors();
+    goto error;
+  }
+
+  rc = SQLITE_OK;
+  goto cleanup;
+
+error:
+  rc = SQLITE_ERROR;
+
+cleanup:
+  if(kctx) EVP_KDF_CTX_free(kctx);
+  if(kdf) EVP_KDF_free(kdf);
+  return rc;
+}
+
+static int sqlcipher_openssl_aead_cipher(
+  void *ctx, int mode,
+  const unsigned char *key, int key_sz,
+  const unsigned char *iv,
+  const unsigned char *aad, int aad_sz,
+  const unsigned char *in, int in_sz,
+  unsigned char *tag,
+  unsigned char *out) {
+
+  int tmp_csz, csz, rc = 0;
+
+  EVP_CIPHER_CTX* ectx = EVP_CIPHER_CTX_new();
+  if(ectx == NULL) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_CIPHER_CTX_new failed", __func__);
+    sqlcipher_openssl_log_errors();
+    goto error;
+  }
+
+  if(!(rc = EVP_CipherInit_ex(ectx, OPENSSL_AEAD_CIPHER, NULL, NULL, NULL, mode))) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_CipherInit_ex for mode %d returned %d", __func__, mode, rc);
+    sqlcipher_openssl_log_errors();
+    goto error;
+  }
+
+  if(!(rc = EVP_CIPHER_CTX_set_padding(ectx, 0))) { /* no padding */
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_CIPHER_CTX_set_padding 0 returned %d", __func__, rc);
+    sqlcipher_openssl_log_errors();
+    goto error;
+  }
+
+  if(!(rc = EVP_CipherInit_ex(ectx, NULL, NULL, key, iv, mode))) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_CipherInit_ex for mode %d returned %d", __func__, mode, rc);
+    sqlcipher_openssl_log_errors();
+    goto error;
+  }
+
+  /* provide AAD data (pageno) */
+  if(!(rc = EVP_CipherUpdate(ectx, NULL, &tmp_csz, aad, aad_sz))) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_CipherUpdate for AAD returned %d", __func__, rc);
+    sqlcipher_openssl_log_errors();
+    goto error;
+  }
+
+  if(!(rc = EVP_CipherUpdate(ectx, out, &tmp_csz, in, in_sz))) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_CipherUpdate returned %d", __func__, rc);
+    sqlcipher_openssl_log_errors();
+    goto error;
+  }
+
+  csz = tmp_csz;  
+  out += tmp_csz;
+
+  if(mode == SQLCIPHER_DECRYPT) {
+    if(!(rc = EVP_CIPHER_CTX_ctrl(ectx, EVP_CTRL_GCM_SET_TAG, 16, tag))) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_CPHER_CTX_ctrl failed to set tag %d", __func__, rc);
+      sqlcipher_openssl_log_errors();
+      goto error;
+    }
+  }
+
+  if(!(rc = EVP_CipherFinal_ex(ectx, out, &tmp_csz))) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_CipherFinal_ex returned %d", __func__, rc);
+    sqlcipher_openssl_log_errors();
+    goto error;
+  }
+
+  csz += tmp_csz;
+  assert(in_sz == csz);
+ 
+  if(mode == SQLCIPHER_ENCRYPT) {
+    if(!(rc = EVP_CIPHER_CTX_ctrl(ectx, EVP_CTRL_GCM_GET_TAG, 16, tag))) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: EVP_CPHER_CTX_ctrl failed to get tag %d", __func__, rc);
+      sqlcipher_openssl_log_errors();
+      goto error;
+    }
+  }
+
+  rc = SQLITE_OK;
+  goto cleanup;
+error:
+  rc = SQLITE_ERROR;
+cleanup:
+  if(ectx) EVP_CIPHER_CTX_free(ectx);
+  return rc; 
+}
+
+static int sqlcipher_openssl_get_aead_iv_sz(void *ctx) {
+  return OPENSSL_AEAD_IV_SZ;
+}
+
+static int sqlcipher_openssl_get_aead_tag_sz(void *ctx) {
+  return OPENSSL_AEAD_TAG_SZ;
+}
+
+static const char* sqlcipher_openssl_get_aead_cipher(void *ctx) {
+  return EVP_CIPHER_get0_name(OPENSSL_AEAD_CIPHER);
+}
+
+/* SQLCipher's v5 construct is similar to XAES-256-GCM split across two separate KDF and GCM operations. We can
+ * self-test proper operation using the official KAT:
+ *   https://github.com/C2SP/C2SP/blob/main/XAES-256-GCM.md
+ * This test runs the input key and first 96 bits of the 192 bit IV through the KDF function, then 
+ * uses the output key with AES-256-GCM and the second 96 bits as the GCM IV. */
+static int sqlcipher_openssl_self_test(void *ctx) {
+  int rc;
+
+  unsigned char K[32] = {
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01
+  };
+
+  unsigned char Kx[32] = {
+    0xc8, 0x61, 0x2c, 0x9e, 0xd5, 0x3f, 0xe4, 0x3e,
+    0x8e, 0x00, 0x5b, 0x82, 0x8a, 0x16, 0x31, 0xa0,
+    0xbb, 0xcb, 0x6a, 0xb2, 0xf4, 0x65, 0x14, 0xec,
+    0x4f, 0x43, 0x9f, 0xcf, 0xd0, 0xfa, 0x96, 0x9b
+  };
+
+  /* ASCII "ABCDEFGHIJKLMNOPQRSTUVWX" where first 12 is KBKDF context, next 12 is GCM IV */
+  unsigned char N[24] = {
+      0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
+      0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f, 0x50,
+      0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58
+  };
+
+  /* ASCII "XAES-256-GCM" */
+  unsigned char PT[12] = {
+    0x58, 0x41, 0x45, 0x53, 0x2d, 0x32, 0x35, 0x36,
+    0x2d, 0x47, 0x43, 0x4d
+  };
+
+  const unsigned char CT[28] = {
+    0xce, 0x54, 0x6e, 0xf6, 0x3c, 0x9c, 0xc6, 0x07,
+    0x65, 0x92, 0x36, 0x09, 0xb3, 0x3a, 0x9a, 0x19,
+    0x74, 0xe9, 0x6e, 0x52, 0xda, 0xf2, 0xfc, 0xf7,
+    0x07, 0x5e, 0x22, 0x71
+  };
+
+  unsigned char Kx_out[32];
+  unsigned char CT_out[28];
+ 
+  if((rc = sqlcipher_openssl_aead_kbkdf(
+    ctx,
+    K, sizeof(K),
+    N, sizeof(N) / 2,
+    Kx_out
+  )) != SQLITE_OK) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: kbkdf failed %d", __func__, rc);
+    return rc;
+  }
+            
+  if((rc = sqlcipher_openssl_aead_cipher(
+      ctx, SQLCIPHER_ENCRYPT,
+      Kx_out, sizeof(Kx_out),
+      N + (sizeof(N)/2),
+      NULL, 0, /* No AEAD for this test */
+      PT, sizeof(PT),
+      CT_out + sizeof(PT), /* 16 byte tag goes at the end */
+      CT_out
+    )) != SQLITE_OK
+  ) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: aead_cipher failed %d", __func__, rc);
+    return rc;
+  } 
+
+  if(memcmp(Kx, Kx_out, sizeof(Kx)) != 0) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: KAT subkey mismatch", __func__);
+    return SQLITE_ERROR;
+  }
+
+  if(memcmp(CT, CT_out, sizeof(CT)) != 0) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_PROVIDER, "%s: KAT ciphertext mismatch", __func__);
+    return SQLITE_ERROR;
+  }
+
+  return SQLITE_OK;
+}
+
 int sqlcipher_openssl_setup(sqlcipher_provider *p) {
   p->init = NULL;
   p->shutdown = NULL;
@@ -425,6 +637,12 @@ int sqlcipher_openssl_setup(sqlcipher_provider *p) {
   p->add_random = sqlcipher_openssl_add_random;
   p->fips_status = sqlcipher_openssl_fips_status;
   p->get_provider_version = sqlcipher_openssl_get_provider_version;
+  p->aead_kbkdf = sqlcipher_openssl_aead_kbkdf;
+  p->aead_cipher = sqlcipher_openssl_aead_cipher;
+  p->get_aead_iv_sz = sqlcipher_openssl_get_aead_iv_sz;
+  p->get_aead_tag_sz = sqlcipher_openssl_get_aead_tag_sz;
+  p->get_aead_cipher = sqlcipher_openssl_get_aead_cipher;
+  p->self_test = sqlcipher_openssl_self_test;
   return SQLITE_OK;
 }
 
