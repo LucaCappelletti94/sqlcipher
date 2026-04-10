@@ -187,7 +187,7 @@ do_test memory-database {
   catchsql {
     PRAGMA key = 'testkey3';
   }
-} {1 {An error occurred with PRAGMA key or rekey. PRAGMA key requires a key of one or more characters. PRAGMA rekey can only be run on an existing encrypted database. Use sqlcipher_export() and ATTACH to convert encrypted/plaintext databases.}}
+} {1 {An error occurred with PRAGMA key or rekey.}}
 db close
 
 # test a large number of inserts in a transaction for multiple pages
@@ -957,7 +957,7 @@ do_test empty-key {
     PRAGMA key = '';
   }
 
-} {1 {An error occurred with PRAGMA key or rekey. PRAGMA key requires a key of one or more characters. PRAGMA rekey can only be run on an existing encrypted database. Use sqlcipher_export() and ATTACH to convert encrypted/plaintext databases.}}
+} {1 {An error occurred with PRAGMA key or rekey.}}
 db close
 file delete -force test.db
 
@@ -1331,7 +1331,7 @@ do_test init-failure-blocks-db-use {
   }
 
   set rc
-} {{1 {An error occurred with PRAGMA key or rekey. PRAGMA key requires a key of one or more characters. PRAGMA rekey can only be run on an existing encrypted database. Use sqlcipher_export() and ATTACH to convert encrypted/plaintext databases.}} {1 {attempt to write a readonly database}} {1 {disk I/O error}}}
+} {{1 {An error occurred with PRAGMA key or rekey.}} {1 {attempt to write a readonly database}} {1 {disk I/O error}}}
 db close
 file delete -force test.db
 
@@ -1362,7 +1362,7 @@ foreach mode {delete wal} {
       PRAGMA cipher_default_page_size = 4096;
     }
     set rc
-  } {{1 {An error occurred with PRAGMA key or rekey. PRAGMA key requires a key of one or more characters. PRAGMA rekey can only be run on an existing encrypted database. Use sqlcipher_export() and ATTACH to convert encrypted/plaintext databases.}} {1 {disk I/O error}} {1 {disk I/O error}}}
+  } {{1 {An error occurred with PRAGMA key or rekey.}} {1 {disk I/O error}} {1 {disk I/O error}}}
   db close
   file delete -force test.db
 }
@@ -1477,7 +1477,7 @@ do_test init-failure-no-mem-leak {
   }
 
   lappend rc [expr { $stop_heap - $start_heap }]
-} {{1 {An error occurred with PRAGMA key or rekey. PRAGMA key requires a key of one or more characters. PRAGMA rekey can only be run on an existing encrypted database. Use sqlcipher_export() and ATTACH to convert encrypted/plaintext databases.}} 0}
+} {{1 {An error occurred with PRAGMA key or rekey.}} 0}
 db close
 file delete -force test.db
 
@@ -1540,7 +1540,7 @@ do_test non-sqlcipher-vfs {
     PRAGMA key = 'testkey';
   }
 
-} {1 {An error occurred with PRAGMA key or rekey. PRAGMA key requires a key of one or more characters. PRAGMA rekey can only be run on an existing encrypted database. Use sqlcipher_export() and ATTACH to convert encrypted/plaintext databases.}}
+} {1 {An error occurred with PRAGMA key or rekey.}}
 db close
 file delete -force test.db
 

@@ -3262,10 +3262,7 @@ static int sqlcipher_set_btree_pagesize(sqlite3 *db, Db *pDb, sqlcipher_ctx *ctx
   return rc;
 }
 
-#define SQLCIPHER_KEY_ERROR "An error occurred with PRAGMA key or rekey. " \
-                            "PRAGMA key requires a key of one or more characters. " \
-                            "PRAGMA rekey can only be run on an existing encrypted database. " \
-                            "Use sqlcipher_export() and ATTACH to convert encrypted/plaintext databases."
+#define SQLCIPHER_KEY_ERROR "An error occurred with PRAGMA key or rekey." \
 
 static int sqlcipher_db_set_pass(sqlite3* db, int nDb, const void *zKey, int nKey, int for_ctx) {
   struct Db *pDb = &db->aDb[nDb];
@@ -3320,7 +3317,7 @@ int sqlcipher_pragma(sqlite3* db, const char *zDb, int iDb, Parse *pParse, const
         rc = sqlite3_rekey_v2(db, zDb, zKey, n);
       }
 
-      if( rc==SQLITE_OK && n!=0 ){
+      if( rc==SQLITE_OK ){
         sqlcipher_vdbe_return_string(pParse, "ok", "ok", P4_TRANSIENT);
       } else {
         sqlite3ErrorMsg(pParse, SQLCIPHER_KEY_ERROR);
@@ -4516,123 +4513,330 @@ int sqlite3_rekey(sqlite3 *db, const void *pKey, int nKey) {
 ** 2. If there is NOT already a key present do nothing
 ** 3. If there is a key present, re-encrypt the database with the new key
 */
+
+#define REKEY_NONE 0
+#define REKEY_E2E  1
+#define REKEY_P2E  2
+#define REKEY_E2P  3
+
 int sqlite3_rekey_v2(sqlite3 *db, const char *zDb, const void *pKey, int nKey) {
-  int rc = SQLITE_ERROR, page_count;
+  int db_index = -1;
+  struct Db *pDb = NULL;
+  sqlcipher_ctx *ctx = NULL;
+  int rc = SQLITE_ERROR, page_count, rc_cleanup;
+  Pgno pgno;
+  PgHdr *page;
+  Pager *pPager = NULL;
+  sqlcipher_file *fd = NULL;
+  char *vacuum_sql = NULL;
+  char *page_size_sql = NULL;
+  char *set_journal_delete_sql = NULL;
+  char *set_journal_back_sql = NULL;
+  char *get_journal_sql = NULL;
+  char *journal_mode = NULL;
+  sqlite3_stmt *stmt = NULL;
+  int rekey_mode = REKEY_NONE;
+  i64 file_sz = 0;
+  int reserve_sz;
+  const char *db_name = zDb ? zDb : "main";
+
   sqlcipher_log(SQLCIPHER_LOG_DEBUG, SQLCIPHER_LOG_CORE, "%s: db=%p zDb=%s", __func__, db, zDb);
-
-  if(pKey && nKey < 0) {
-    nKey = strlen(pKey);
-  }
-
+  
   if(!sqlcipher_init) {
     sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: sqlcipher not initialized %d",__func__, sqlcipher_init_error);
     return sqlcipher_init_error;
   }
 
-  if(db) {
-    sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: entering database mutex %p", __func__, db->mutex);
-    sqlite3_mutex_enter(db->mutex);
-    sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: entered database mutex %p", __func__, db->mutex);
+  if(pKey && nKey < 0) {
+    nKey = strlen(pKey);
   }
 
-  if(db && pKey && nKey > 0) {
-    int db_index = sqlcipher_find_db_index(db, zDb);
-    struct Db *pDb = NULL;
+  if(!db) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: invalid database handle", __func__);
+    return SQLITE_MISUSE;
+  }
 
-    if(!(db_index >= 0 && db_index < db->nDb)) {
-      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: invalid database zDb=%p", __func__, zDb);
-      rc = SQLITE_MISUSE;
-      goto cleanup;
-    }
+  db_index = sqlcipher_find_db_index(db, zDb);
+  if(!(db_index >= 0 && db_index < db->nDb)) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: invalid database zDb=%p", __func__, zDb);
+    return SQLITE_MISUSE;
+  }
 
-    pDb = &db->aDb[db_index];
-    sqlcipher_log(SQLCIPHER_LOG_DEBUG, SQLCIPHER_LOG_CORE, "%s: database zDb=%p db_index:%d", __func__, zDb, db_index);
+  pDb = &db->aDb[db_index];
+  sqlcipher_log(SQLCIPHER_LOG_DEBUG, SQLCIPHER_LOG_CORE, "%s: database zDb=%p db_index:%d", __func__, zDb, db_index);
 
-    if(pDb->pBt) {
-      sqlcipher_ctx *ctx;
-      Pgno pgno;
-      PgHdr *page;
-      Pager *pPager = sqlite3BtreePager(pDb->pBt);
+  if(!pDb->pBt) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: invalid database btree pDb=%p", __func__, pDb);
+    return SQLITE_MISUSE;
+  }
 
-      ctx = (sqlcipher_ctx*) sqlcipher_pager_get_ctx(pPager);
-     
-      if(ctx == NULL) { 
-        /* there was no sqlcipher_ctx attached to this database, so this should do nothing! */ 
-        sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: no sqlcipher_ctx attached to db %s: rekey can't be used on an unencrypted database", __func__, zDb);
-        rc = SQLITE_MISUSE;
-        goto cleanup;
-      }
+  /* get the pager and current sqlcipher_ctx if set */
+  pPager = sqlite3BtreePager(pDb->pBt);
+  fd = (sqlcipher_file *) sqlite3PagerFile(pPager);
+  ctx = (sqlcipher_ctx*) sqlcipher_pager_get_ctx(pPager);
 
-      sqlcipher_db_set_pass(db, db_index, pKey, nKey, CIPHER_WRITE_CTX);
-    
-      /* do stuff here to rewrite the database 
-      ** 1. Create a transaction on the database
-      ** 2. Iterate through each page, reading it and then writing it.
-      ** 3. If that goes ok then commit and put ctx->rekey into ctx->key
-      **    note: don't deallocate rekey since it may be used in a subsequent iteration 
-      */
-      if((rc = sqlite3BtreeBeginTrans(pDb->pBt, 1, 0)) != SQLITE_OK) { /* begin write transaction */
-        sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: failed to begin write transaction %d", __func__, rc);
-        goto cleanup;
-      } 
-      sqlite3PagerPagecount(pPager, &page_count);
-      for(pgno = 1; rc == SQLITE_OK && pgno <= (unsigned int)page_count; pgno++) { /* pgno's start at 1 see pager.c:pagerAcquire */
-        if(!sqlite3pager_is_sj_pgno(pPager, pgno)) { /* skip this page (see pager.c:pagerAcquire for reasoning) */
-          rc = sqlite3PagerGet(pPager, pgno, &page, 0);
-          if(rc == SQLITE_OK) { /* write page see pager_incr_changecounter for example */
-            rc = sqlite3PagerWrite(page);
-            if(rc == SQLITE_OK) {
-              sqlite3PagerUnref(page);
-            } else {
-             sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: error %d occurred writing page %d", __func__, rc, pgno);  
-            }
-#ifdef SQLCIPHER_TEST
-            /* if testing rekey failure, error out half way through the rekey */
-            if(SQLCIPHER_FLAG_GET(cipher_test_flags, TEST_FAIL_REKEY) && pgno > (unsigned int)(page_count / 2)) {
-              sqlcipher_log(SQLCIPHER_LOG_WARN, SQLCIPHER_LOG_CORE, "sqlite3_rekey_v2: simulated rekey failure, error code %d", SQLITE_ERROR);
-              rc = SQLITE_ERROR;
-            }
-#endif
-          } else {
-             sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: error %d occurred reading page %d", __func__, rc, pgno);  
-          }
-        } 
-#ifdef SQLCIPHER_TEST
-        /* if testing rekey failure, error out half way through the rekey */
-        if(SQLCIPHER_FLAG_GET(cipher_test_flags, TEST_FAIL_REKEY) && pgno > (page_count / 2)) {
-          sqlcipher_log(SQLCIPHER_LOG_WARN, SQLCIPHER_LOG_CORE, "%s: simulated rekey failure, error code %d", __func__, SQLITE_ERROR);
-          sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: leaving database mutex %p", __func__, db->mutex);
-          sqlite3_mutex_leave(db->mutex);
-          sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: left database mutex %p", __func__, db->mutex);
-          rc = SQLITE_ERROR;
-        }
-#endif
-      }
+  if(!fd || !((sqlite3_file*)fd)->pMethods) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: rekey called on closed or in-memory database", __func__);
+    return SQLITE_MISUSE;
+  }
 
-      /* if commit was successful commit and copy the rekey data to current key, else rollback to release locks */
-      if(rc == SQLITE_OK) { 
-        sqlcipher_log(SQLCIPHER_LOG_DEBUG, SQLCIPHER_LOG_CORE, "%s: committing", __func__);
-        sqlite3BtreeCommit(pDb->pBt); 
-        sqlcipher_ctx_key_copy(ctx, CIPHER_WRITE_CTX); /* copy the write key back to the read cipher_ctx */
-      } else {
-        sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: error %d occurred, rollback", __func__, rc);
-        sqlcipher_ctx_key_copy(ctx, CIPHER_READ_CTX); /* copy the read key back to write cipher_ctx before rolling back the transaction */
-        sqlite3BtreeRollback(pDb->pBt, SQLITE_ABORT_ROLLBACK, 0);
-      }
-    }
+  if(sqlite3OsFileSize((sqlite3_file *)fd, &file_sz) != SQLITE_OK || file_sz == 0) {
+    /* database has not been created yet, so no pages exist on disk. abort */
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: empty database", __func__);
+    return SQLITE_MISUSE;
+  }
 
+  if(!ctx && (!pKey || !nKey)) {
+    /* current database is not encrypted and there is no key provided for the target. This is a no-op */
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: rekey run on plaintext database with no key provided", __func__, pDb);
+    return SQLITE_MISUSE;
+  }
+
+  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: entering database mutex %p", __func__, db->mutex);
+  sqlite3_mutex_enter(db->mutex);
+  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: entered database mutex %p", __func__, db->mutex);
+
+  /* grab existing journal mode, then set journal mode to delete. resizing and encrypted coversion will not work with WAL */
+  if(!(get_journal_sql = sqlite3_mprintf("PRAGMA %w.journal_mode;", db_name))) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: failed to format journal_mode query SQL", __func__);
+    rc = SQLITE_NOMEM;
     goto cleanup;
   }
 
-  rc = SQLITE_MISUSE;
-  sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: no key provided for db %s: rekey can't be used to decrypt an encrypted database", __func__, zDb);
+  if((rc = sqlite3_prepare(db, get_journal_sql, -1, &stmt, NULL)) != SQLITE_OK) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: %s failed to prepare journal mode query for database %d", __func__, set_journal_delete_sql, rc);
+    goto cleanup;
+  }
+ 
+  rc = sqlite3_step(stmt);
+  if(rc == SQLITE_ROW) {
+    journal_mode = sqlite3_mprintf("%s", sqlite3_column_text(stmt, 0)); 
+  } else {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: failed step for journal query %d", __func__, rc);
+    goto cleanup; 
+  }
+  sqlite3_finalize(stmt);
+  stmt = NULL;
+  
+  if(!(set_journal_delete_sql = sqlite3_mprintf("PRAGMA %w.journal_mode = delete;", db_name))) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: failed to format journal_mode=delete SQL", __func__);
+    rc = SQLITE_NOMEM;
+    goto cleanup;
+  }
+
+  if((rc = sqlite3_exec(db, set_journal_delete_sql, 0, 0, 0)) != SQLITE_OK) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: %s failed to set journal mode for database %d", __func__, set_journal_delete_sql, rc);
+    goto cleanup;
+  } 
+
+  if(!ctx) { 
+    sqlcipher_ctx *temp_ctx = NULL;
+    /* plaintext database conversion to encrypted */
+    rekey_mode = REKEY_P2E;
+
+    /* initialize a temporary sqlcipher_ctx object with all default settings. The context is detatched,
+     * but will allow us to query what reserve size should be based on all the relevant default settings
+     * which is a complex process. after getting the reserve size free it immediately */ 
+    if((rc = sqlcipher_ctx_init(&temp_ctx, pDb, "x", 1)) != SQLITE_OK) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_MEMORY, "%s: failed to initilize temporary sqlcipher_ctx %d", __func__, rc);
+      goto cleanup; 
+    }
+    reserve_sz = temp_ctx->reserve_sz;
+    sqlcipher_ctx_free(&temp_ctx);
+
+    /* prepare the SQL that will need to be executed to adjust page size and vacuum the database */
+    if(!(page_size_sql = sqlite3_mprintf("PRAGMA %w.page_size = %d", db_name, default_page_size))) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: failed to format PRAGMA page_size SQL", __func__);
+      goto cleanup;
+    }
+
+    if(!(vacuum_sql = sqlite3_mprintf("VACUUM %w", db_name))) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: failed to format VACUUM SQL", __func__);
+      goto cleanup;
+    }
+
+    /* aligning the database page size and reserve size must happen for an unencrypted database
+     * before we can encrypt it. This is a two step process, first the page size must be increased
+     * or decreased to the sqlcipher default and vacuumed if necessary. We only run step one if the 
+     * page size is different from the default. Then the reserve bytes must be set with sqlite3_file_control,
+     * and the database re-vacuumed.*/
+    if(sqlite3BtreeGetPageSize(pDb->pBt) != default_page_size) {
+      sqlcipher_log(SQLCIPHER_LOG_DEBUG, SQLCIPHER_LOG_CORE, "%s: adjusting page size for database to %d with VACUUM", __func__, default_page_size);
+
+      if((rc = sqlite3_exec(db, page_size_sql, 0, 0, 0)) != SQLITE_OK) {
+        sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: %s failed to set page size for database %d", __func__, page_size_sql, rc);
+        goto cleanup;
+      } 
+
+      if((rc = sqlite3_exec(db, vacuum_sql, 0, 0, 0)) != SQLITE_OK) {
+        sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: %s failed for unencrypted db %d", __func__, vacuum_sql, rc);
+        goto cleanup;
+      } 
+    }
+
+    /* always set reserve bytes */
+    if((rc = sqlite3_file_control(db, db_name, SQLITE_FCNTL_RESERVE_BYTES, &reserve_sz)) != SQLITE_OK) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: sqlite3_file_control error rc=%d n=%d", __func__, rc, reserve_sz);
+      goto cleanup;
+    }
+
+    if((rc = sqlite3_exec(db, vacuum_sql, 0, 0, 0)) != SQLITE_OK) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: %s failed for unencrypted db %d", __func__, vacuum_sql, rc);
+      goto cleanup;
+    } 
+
+    /* attach new codec */  
+    if((rc = sqlcipher_db_attach(db, db_index, pKey, nKey)) != SQLITE_OK) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: failed attach sqlcipher to current db %d", __func__, rc);
+      goto cleanup;
+    }
+
+    if(!(ctx = (sqlcipher_ctx *) sqlcipher_pager_get_ctx(pPager))) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: failed to retrieve encryption context from current db", __func__);
+      rc = SQLITE_ERROR;
+      goto cleanup;
+    }
+
+    SQLCIPHER_FLAG_SET(fd->flags, SQLCIPHER_FILE_PASSTHROUGH_READ);
+
+    /* generate new random sale. we do this now because otherwise the default path for key derviation would
+     * read the first 16 bytes of the database file and use it as salt, which would always be "SQlite Format 3"
+     * since the origin database is not encrypted */
+    if((rc = ctx->provider->random(ctx->provider_ctx, (void *)ctx->kdf_salt, ctx->kdf_salt_sz)) != SQLITE_OK) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_MEMORY, "%s: failed to generate rekey database salt %d", __func__, rc); 
+      goto cleanup; 
+    }
+    SQLCIPHER_FLAG_SET(ctx->flags, CIPHER_FLAG_HAS_KDF_SALT);
+
+  } else if(!(pKey && nKey)) {
+    /* encrypted database conversion to plaintext */
+    rekey_mode = REKEY_E2P;
+    SQLCIPHER_FLAG_SET(fd->flags, SQLCIPHER_FILE_PASSTHROUGH_WRITE);
+  } else {
+    /* encrypted database to encryped database with different key */
+    rekey_mode = REKEY_E2E;
+    if((rc = sqlcipher_db_set_pass(db, db_index, pKey, nKey, CIPHER_WRITE_CTX)) != SQLITE_OK) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: failed to set key on write cipher_ctx %d", __func__, rc);
+      goto cleanup;
+    }
+  } 
+
+  sqlcipher_log(SQLCIPHER_LOG_INFO, SQLCIPHER_LOG_CORE, "%s: starting rekey on %s", __func__, zDb);
+
+  /* Rewrite the database 
+  ** 1. Create a transaction on the database
+  ** 2. Iterate through each page, reading it and then writing it.
+  ** 3. If that goes ok then commit and ensure write key is synced up with read key
+  **    note: don't deallocate rekey since it may be used in a subsequent iteration 
+  */
+  if((rc = sqlite3BtreeBeginTrans(pDb->pBt, 1, 0)) != SQLITE_OK) { /* begin write transaction */
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: failed to begin write transaction %d", __func__, rc);
+    goto cleanup;
+  } 
+  sqlite3PagerPagecount(pPager, &page_count);
+  for(pgno = 1; rc == SQLITE_OK && pgno <= (unsigned int)page_count; pgno++) { /* pgno's start at 1 see pager.c:pagerAcquire */
+    if(!sqlite3pager_is_sj_pgno(pPager, pgno)) { /* skip this page (see pager.c:pagerAcquire for reasoning) */
+      rc = sqlite3PagerGet(pPager, pgno, &page, 0);
+      if(rc == SQLITE_OK) { /* write page see pager_incr_changecounter for example */
+        if((rc = sqlite3PagerWrite(page)) != SQLITE_OK) {
+          sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: error %d occurred writing page %d", __func__, rc, pgno);  
+        }
+        sqlite3PagerUnref(page);
+      } else {
+         sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: error %d occurred reading page %d", __func__, rc, pgno);  
+      }
+    } 
+#ifdef SQLCIPHER_TEST
+    /* if testing rekey failure, error out half way through the rekey */
+    if(SQLCIPHER_FLAG_GET(cipher_test_flags, TEST_FAIL_REKEY) && pgno > (unsigned int)(page_count / 2)) {
+      sqlcipher_log(SQLCIPHER_LOG_WARN, SQLCIPHER_LOG_CORE, "%s: simulated rekey failure, error code %d", __func__, SQLITE_ERROR);
+      rc = SQLITE_ERROR;
+    }
+#endif
+  }
 
 cleanup:
-  if(db) {
-    sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: leaving database mutex %p", __func__, db->mutex);
-    sqlite3_mutex_leave(db->mutex);
-    sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: left database mutex %p", __func__, db->mutex);
+  if(vacuum_sql) sqlite3_free(vacuum_sql);
+  if(page_size_sql) sqlite3_free(page_size_sql);
+  if(set_journal_delete_sql) sqlite3_free(set_journal_delete_sql);
+  if(get_journal_sql) sqlite3_free(get_journal_sql);
+  if(stmt) sqlite3_finalize(stmt); 
+
+  if(rc == SQLITE_OK && (rc = sqlite3BtreeCommit(pDb->pBt)) == SQLITE_OK) {
+    /* the rekey was successful and commit succeeded*/
+    switch(rekey_mode) {
+      case REKEY_P2E:
+        /* database is now encrypted, turn off read passthrough */
+        SQLCIPHER_FLAG_UNSET(fd->flags, SQLCIPHER_FILE_PASSTHROUGH_READ);
+        break; 
+      case REKEY_E2P:
+        /* the origin pager still is still setup for encyption, free and uninstall sqlcipher so it can be used normally */
+        sqlcipher_ctx_free(&fd->ctx);
+        break;
+      case REKEY_E2E:
+        /* copy write key back to read key */
+        rc = sqlcipher_ctx_key_copy(ctx, CIPHER_WRITE_CTX);
+        break; 
+      case REKEY_NONE:
+        /* do nothing */
+        break; 
+    }
   }
+
+  if(rc != SQLITE_OK) {
+    /* an error occurred during processing or the commit failed. attempt rollback */
+    switch(rekey_mode) {
+      case REKEY_P2E:
+        /* contents of journal are encrypted because context was attached to teh database. If rekey failed
+         * set passthrough write so that data is decrypted from journal but written to database file plaintext */
+        SQLCIPHER_FLAG_SET(fd->flags, SQLCIPHER_FILE_PASSTHROUGH_WRITE);
+        break; 
+      case REKEY_E2P:
+        /* contents of journal are encrypted, so turn off write passthrough before rollback*/
+        SQLCIPHER_FLAG_UNSET(fd->flags, SQLCIPHER_FILE_PASSTHROUGH_WRITE);
+        break;
+      case REKEY_E2E:
+        /* copy the read key back to write key before rolling back the transaction */ 
+        rc_cleanup  = sqlcipher_ctx_key_copy(ctx, CIPHER_READ_CTX); 
+        if(rc == SQLITE_OK) rc = rc_cleanup;
+        break; 
+      case REKEY_NONE:
+        /* do nothing */
+        break; 
+    }
+
+    if(sqlite3BtreeRollback(pDb->pBt, SQLITE_ABORT_ROLLBACK, 0) != SQLITE_OK) { 
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: failed to rollback transaction on rekey%d", __func__, rc);
+    }
+
+    /* after rollbak on the the plaintext-to-encrypted, free the context to switch back to unencrypted database */
+    if(rekey_mode == REKEY_P2E && fd->ctx) sqlcipher_ctx_free(&fd->ctx);
+  }
+
+  /* if we changed journal mode then switch it back */
+  if(journal_mode) {
+    if(!(set_journal_back_sql = sqlite3_mprintf("PRAGMA %w.journal_mode = %s;", db_name, journal_mode))) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: failed to format journal mode reset", __func__);
+      if(rc == SQLITE_OK) rc = SQLITE_NOMEM; 
+    } else {
+      if((rc_cleanup = sqlite3_exec(db, set_journal_back_sql, NULL, NULL, NULL)) != SQLITE_OK) {
+        sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: failed to re-set journal mode via %s: %d", __func__, set_journal_back_sql, rc_cleanup);
+        if(rc == SQLITE_OK) rc = rc_cleanup;
+      }
+    }
+  }
+  if(set_journal_back_sql) sqlite3_free(set_journal_back_sql);
+  if(journal_mode) sqlite3_free(journal_mode);
+
+  /* regardless of state, turn off passthroughs before returning */
+  SQLCIPHER_FLAG_UNSET(fd->flags, SQLCIPHER_FILE_PASSTHROUGH_WRITE);
+  SQLCIPHER_FLAG_UNSET(fd->flags, SQLCIPHER_FILE_PASSTHROUGH_READ);
+
+  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: leaving database mutex %p", __func__, db->mutex);
+  sqlite3_mutex_leave(db->mutex);
+  sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_MUTEX, "%s: left database mutex %p", __func__, db->mutex);
+
+  sqlcipher_log(SQLCIPHER_LOG_INFO, SQLCIPHER_LOG_CORE, "%s: rekey complete with rc %d", __func__, rc);
   return rc;
 }
 

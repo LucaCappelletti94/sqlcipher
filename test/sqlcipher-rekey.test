@@ -47,7 +47,7 @@ do_test rekey-as-first-op-on-empty {
     PRAGMA rekey = 'testkey';
   }
 
-} {1 {An error occurred with PRAGMA key or rekey. PRAGMA key requires a key of one or more characters. PRAGMA rekey can only be run on an existing encrypted database. Use sqlcipher_export() and ATTACH to convert encrypted/plaintext databases.}}
+} {1 {An error occurred with PRAGMA key or rekey.}}
 db close
 file delete -force test.db
 
@@ -121,9 +121,8 @@ do_test rekey-same-passkey {
     BEGIN;
   }
 
-  for {set i 1} {$i<=1000} {incr i} {
-    set r [expr {int(rand()*500000)}]
-    execsql "INSERT INTO t1 VALUES($i,'value $r');"
+  for {set i 1} {$i<=5000} {incr i} {
+    execsql "INSERT INTO t1 VALUES($i,zeroblob(5000));"
   }
 
   execsql {
@@ -132,7 +131,7 @@ do_test rekey-same-passkey {
     PRAGMA rekey = 'test123';
     SELECT count(*) FROM t1;
   }
-} {1000 ok 1000}
+} {5000 ok 5000}
 db close
 file delete -force test.db
 
@@ -149,9 +148,8 @@ do_test rekey-and-query-1 {
     BEGIN;
   }
 
-  for {set i 1} {$i<=1000} {incr i} {
-    set r [expr {int(rand()*500000)}]
-    execsql "INSERT INTO t1 VALUES($i,'value $r');"
+  for {set i 1} {$i<=5000} {incr i} {
+    execsql "INSERT INTO t1 VALUES($i,zeroblob(5000));"
   }
 
   execsql {
@@ -160,7 +158,7 @@ do_test rekey-and-query-1 {
     PRAGMA rekey = 'test321';
     SELECT count(*) FROM t1;
   }
-} {1000 ok 1000}
+} {5000 ok 5000}
 
 db close
 
@@ -170,7 +168,7 @@ do_test rekey-and-query-2 {
     PRAGMA key = 'test321';
     SELECT count(*) FROM t1;
   }
-} {ok 1000}
+} {ok 5000}
 db close
 file delete -force test.db
 
@@ -183,110 +181,59 @@ file delete -force test.db
 # read back. This test will ensure that Secure Delete
 # is enabled and all pages are being written and are not
 # being optimized out by sqlite3PagerDontWrite
-do_test rekey-delete-and-query-1 {
-  sqlite_orig db test.db
+foreach mode {delete wal} {
+  do_test rekey-delete-and-query-1-$mode {
+    sqlite_orig db test.db
 
-  execsql {
-    PRAGMA key = 'test123';
-    CREATE TABLE t1(a,b);
-    CREATE INDEX ta_a ON t1(a);
-    BEGIN;
-  }
+    execsql "
+      PRAGMA key = 'test123';
+      PRAGMA journal_mode = $mode;
+      CREATE TABLE t1(a,b);
+      CREATE INDEX ta_a ON t1(a);
+      BEGIN;
+    "
 
-  for {set i 1} {$i<1000} {incr i} {
+    for {set i 1} {$i<5000} {incr i} {
+      execsql "INSERT INTO t1 VALUES($i,zeroblob(5000));"
+    }
+
+    execsql "DELETE FROM t1 WHERE a < 2500;"
+
     set r1 [expr {int(rand()*32767)}]
-    execsql "INSERT INTO t1 VALUES($i,$r1);"
-  }
+    execsql "UPDATE t1 SET b = $r1 WHERE a < 3750;"
 
-  execsql "DELETE FROM t1 WHERE a < 500;"
+    execsql "DELETE FROM t1 WHERE a > 3750;"
 
-  set r1 [expr {int(rand()*32767)}]
-  execsql "UPDATE t1 SET b = $r1 WHERE a < 750;"
+    execsql {
+      COMMIT;
+      SELECT (count(*) > 0) FROM t1;
+    }
+  } {1}
+  db close
 
-  execsql "DELETE FROM t1 WHERE a > 750;"
+  do_test rekey-delete-and-query-2-$mode {
+    sqlite_orig db test.db
+    execsql {
+      PRAGMA key = 'test123';
+      PRAGMA cache_size = 0;
+      PRAGMA rekey = 'test321';
+      SELECT count(*) > 1 FROM t1;
+      PRAGMA integrity_check;
+    }
+  } {ok ok 1 ok}
+  db close
 
-  execsql {
-    COMMIT;
-    SELECT (count(*) > 0) FROM t1;
-  }
-} {1}
-db close
-
-do_test rekey-delete-and-query-2 {
-  sqlite_orig db test.db
-  execsql {
-    PRAGMA key = 'test123';
-    PRAGMA rekey = 'test321';
-    SELECT count(*) > 1 FROM t1;
-    PRAGMA integrity_check;
-  }
-} {ok ok 1 ok}
-db close
-
-do_test rekey-delete-and-query-3 {
-  sqlite_orig db test.db
-  execsql {
-    PRAGMA key = 'test321';
-    SELECT count(*) > 1 FROM t1;
-  }
-} {ok 1}
-db close
-file delete -force test.db
-
-
-# same as previous test, but use WAL
-do_test rekey-delete-and-query-wal-1 {
-  sqlite_orig db test.db
-
-  execsql {
-    PRAGMA key = 'test123';
-    PRAGMA journal_mode = WAL;
-    CREATE TABLE t1(a,b);
-    CREATE INDEX ta_a ON t1(a);
-    BEGIN;
-  }
-
-  for {set i 1} {$i<1000} {incr i} {
-    set r1 [expr {int(rand()*32767)}]
-    execsql "INSERT INTO t1 VALUES($i,$r1);"
-  }
-
-  execsql "DELETE FROM t1 WHERE a < 500;"
-
-  set r1 [expr {int(rand()*32767)}]
-  execsql "UPDATE t1 SET b = $r1 WHERE a < 750;"
-
-  execsql "DELETE FROM t1 WHERE a > 750;"
-
-  execsql {
-    COMMIT;
-    SELECT (count(*) > 0) FROM t1;
-  }
-} {1}
-db close
-
-do_test rekey-delete-and-query-wal-2 {
-  sqlite_orig db test.db
-  execsql {
-    PRAGMA key = 'test123';
-    PRAGMA journal_mode = WAL;
-    PRAGMA rekey = 'test321';
-    SELECT count(*) > 1 FROM t1;
-    PRAGMA integrity_check;
-  }
-} {ok wal ok 1 ok}
-db close
-
-do_test rekey-delete-and-query-wal-3 {
-  sqlite_orig db test.db
-  execsql {
-    PRAGMA key = 'test321';
-    PRAGMA journal_mode = WAL;
-    SELECT count(*) > 1 FROM t1;
-  }
-} {ok wal 1}
-db close
-file delete -force test.db
+  do_test rekey-delete-and-query-3-$mode {
+    sqlite_orig db test.db
+    execsql "
+      PRAGMA key = 'test321';
+      SELECT count(*) > 1 FROM t1;
+      PRAGMA journal_mode;
+    " 
+  } "ok 1 $mode"
+  db close
+  file delete -force test.db
+}
 
 do_test rekey-database-by-name {
     sqlite_orig db test.db
@@ -330,6 +277,7 @@ foreach mode {delete wal} {
     for {set i 1} {$i<=5000} {incr i} {
       execsql "INSERT INTO t1 VALUES($i,zeroblob(5000));"
     }
+
     execsql {
       COMMIT;
       PRAGMA wal_checkpoint(TRUNCATE);
@@ -361,7 +309,7 @@ foreach mode {delete wal} {
       PRAGMA cipher_test_off = fail_rekey;
     }]
 
-  } {5000 {1 {An error occurred with PRAGMA key or rekey. PRAGMA key requires a key of one or more characters. PRAGMA rekey can only be run on an existing encrypted database. Use sqlcipher_export() and ATTACH to convert encrypted/plaintext databases.}} {ok 5000 ok}}
+  } {5000 {1 {An error occurred with PRAGMA key or rekey.}} {ok 5000 ok}}
   db close
   file delete -force test.db
 }
@@ -398,8 +346,284 @@ do_test rekey-readonly {
     SELECT * FROM t1;
   }]
   set rc
-} {{1 {An error occurred with PRAGMA key or rekey. PRAGMA key requires a key of one or more characters. PRAGMA rekey can only be run on an existing encrypted database. Use sqlcipher_export() and ATTACH to convert encrypted/plaintext databases.}} {1 {file is not a database}} {ok 1 2}}
+} {{1 {An error occurred with PRAGMA key or rekey.}} {1 {file is not a database}} {ok 1 2}}
 db close
 file delete -force test.db
+
+# when run inder the test fixure, default page size of
+# non-encrypted databases is 1024. If this
+# ever changes in the SQLite test fixture this
+# test will fail
+do_test rekey-default-page-size {
+  sqlite_orig db test.db
+
+  execsql {
+    CREATE TABLE t1(a,b);
+    PRAGMA page_size;
+  } 
+} {1024}
+db close
+file delete -force test.db
+
+# create an encrypted database, rekey it plaintext, and verify results
+foreach mode {delete wal} {
+  do_test rekey-encrypted-to-plaintext-$mode {
+    sqlite_orig db test.db
+
+    execsql " 
+      PRAGMA key = 'testkey';
+      PRAGMA journal_mode = $mode;
+      CREATE TABLE t1(a,b);
+      BEGIN;
+    "
+
+    for {set i 1} {$i<=5000} {incr i} {
+      execsql "INSERT INTO t1 VALUES($i,zeroblob(5000));" 
+    }
+
+    execsql {
+      COMMIT;
+      PRAGMA cache_size = 0;
+      PRAGMA rekey = '';
+    } 
+    db close
+
+    sqlite_orig db test.db
+    execsql {
+      SELECT count(*) FROM t1;
+      PRAGMA journal_mode;
+    } 
+  } "5000 $mode"
+  db close
+  file delete -force test.db
+}
+
+# create an encrypted database, rekey it plaintext
+# but fail half way through. verify the result
+# is still encrypted
+foreach mode {delete wal} {
+  do_test rekey-encrypted-to-plaintext-error-$mode {
+    sqlite_orig db test.db
+
+    set rc {}
+
+    execsql "
+      PRAGMA key = 'testkey';
+      PRAGMA journal_mode = $mode;
+      CREATE TABLE t1(a,b);
+      BEGIN;
+    " 
+
+    for {set i 1} {$i<=5000} {incr i} {
+      execsql "INSERT INTO t1 VALUES($i,zeroblob(5000));" 
+    }
+
+    lappend rc [catchsql {
+      COMMIT;
+      PRAGMA cache_size = 0;
+      PRAGMA cipher_test_on = fail_rekey;
+      PRAGMA rekey = '';
+    }]
+    db close
+
+    sqlite_orig db test.db
+    lappend rc [catchsql {
+      SELECT count(*) FROM t1;
+    }]
+    db close
+
+    sqlite_orig db test.db
+    lappend rc [execsql {
+      PRAGMA key = 'testkey';
+      SELECT count(*) FROM t1;
+      PRAGMA cipher_test_off = fail_rekey;
+    }]
+   
+  } {{1 {An error occurred with PRAGMA key or rekey.}} {1 {file is not a database}} {ok 5000}}
+  db close
+  file delete -force test.db
+}
+
+# create a regular sqlite database, rekey it, and verify results
+# note that this database will have a page size of 1024 which
+# will exercise the rekey's page size adjustment branch
+foreach mode {delete wal} {
+  do_test rekey-plaintext-to-encrypted-$mode {
+    sqlite_orig db test.db
+
+    execsql " 
+      PRAGMA journal_mode = $mode;
+      CREATE TABLE t1(a,b);
+      BEGIN;
+    " 
+
+    for {set i 1} {$i<=5000} {incr i} {
+      execsql "INSERT INTO t1 VALUES($i,zeroblob(5000));" 
+    }
+
+    execsql {
+      COMMIT;
+      PRAGMA rekey = 'testkey';
+    } 
+    db close
+
+    sqlite_orig db test.db
+    execsql {
+      PRAGMA key = 'testkey';
+      SELECT count(*) FROM t1;
+      PRAGMA page_size;
+      PRAGMA journal_mode;
+    } 
+  } "ok 5000 4096 $mode"
+  db close
+  file delete -force test.db
+}
+
+# create a regular sqlite database, rekey it, verify
+# failure behavior
+foreach mode {delete wal} {
+  do_test rekey-plaintext-to-encrypted-error-$mode {
+    sqlite_orig db test.db
+
+    set rc {}
+
+    execsql "
+      PRAGMA journal_mode = $mode;
+      CREATE TABLE t1(a,b);
+      BEGIN;
+    " 
+
+    for {set i 1} {$i<=5000} {incr i} {
+      execsql "INSERT INTO t1 VALUES($i,zeroblob(5000));" 
+    }
+
+    lappend rc [catchsql {
+      COMMIT;
+      PRAGMA cache_size = 0;
+      PRAGMA cipher_test_on = fail_rekey;
+      PRAGMA rekey = 'testkey';
+    }]
+    db close
+
+    sqlite_orig db test.db
+    lappend rc [execsql {
+      SELECT count(*) FROM t1;
+      PRAGMA page_size;
+      PRAGMA cipher_test_off = fail_rekey;
+    }] 
+  } {{1 {An error occurred with PRAGMA key or rekey.}} {5000 4096}}
+  db close
+  file delete -force test.db
+}
+
+# create a regular sqlite database with custom page size
+# using the SQLCipher default of 4096. rekey it, and verify results.
+# this will bypass the page size adjustment branch
+# in rekey
+do_test rekey-plaintext-to-encrypted-sqlcipher-default-page-size {
+  sqlite_orig db test.db
+
+  execsql {
+    PRAGMA page_size = 4096;
+    CREATE TABLE t1(a,b);
+    BEGIN;
+  }
+
+  for {set i 1} {$i<=5000} {incr i} {
+    execsql "INSERT INTO t1 VALUES($i,zeroblob(5000));" 
+  }
+
+  execsql {
+    COMMIT;
+    PRAGMA rekey = 'testkey';
+  } 
+  db close
+
+  sqlite_orig db test.db
+  execsql {
+    PRAGMA key = 'testkey';
+    SELECT count(*) FROM t1;
+    PRAGMA page_size;
+  } 
+} {ok 5000 4096}
+db close
+file delete -force test.db
+
+# test rekey encryption/decryption works with all legacy and current
+# cipher compatibility levels, exercising the different combinations
+# of page size, kdf iterations, algorithms, HMAC and AEAD settings
+# that SQLCipher has supported over the years. Two of these test
+# iterations are redundant with the prior default tests, but we're
+# leaving them so we don't miss them for a future release where major
+# version changes
+foreach version {1 2 3 4 5} {
+
+  # create a regular sqlite database, rekey it, and verify results
+  # the new database should be created with the proper version
+  # settings which persist through and are checked.
+  do_test rekey-plaintext-to-encrypted-compatibility-$version {
+    sqlite_orig db test.db
+
+    execsql {
+      CREATE TABLE t1(a,b);
+      BEGIN;
+    }
+
+    for {set i 1} {$i<=5000} {incr i} {
+      execsql "INSERT INTO t1 VALUES($i,zeroblob(5000));"
+    }
+
+    execsql "
+      COMMIT;
+      PRAGMA cipher_default_compatibility = $version;
+      PRAGMA cache_size = 0;
+      PRAGMA rekey = 'testkey';
+      PRAGMA cipher_default_compatibility = 5; -- reset default to avoid polluting future iterations
+    "
+    db close
+
+    sqlite_orig db test.db
+    execsql "
+      PRAGMA key = 'testkey';
+      PRAGMA cipher_compatibility = $version;
+      SELECT count(*) FROM t1;
+      PRAGMA integrity_check;
+    "
+  } {ok 5000 ok}
+  db close
+  file delete -force test.db
+
+  # create an encrypted database with the right compatibility settings
+  # the rekey it to plaintext and verify results
+  do_test rekey-encrypted-to-plaintext-compatibility-$version {
+    sqlite_orig db test.db
+
+    execsql "
+      PRAGMA key = 'testkey';
+      PRAGMA cipher_compatibility = $version;
+      CREATE TABLE t1(a,b);
+      BEGIN;
+    "
+
+    for {set i 1} {$i<=5000} {incr i} {
+      execsql "INSERT INTO t1 VALUES($i,zeroblob(5000));"
+    }
+
+    execsql {
+      COMMIT;
+      PRAGMA cache_size = 0;
+      PRAGMA rekey = '';
+    }
+    db close
+
+    sqlite_orig db test.db
+    execsql {
+      SELECT count(*) FROM t1;
+      PRAGMA integrity_check;
+    }
+  } {5000 ok}
+  db close
+  file delete -force test.db
+}
 
 finish_test
