@@ -3710,8 +3710,8 @@ opendb_out:
   }
 #endif
 /* BEGIN SQLCIPHER */
-#if defined(SQLITE_HAS_CODEC)
-  if( rc==SQLITE_OK ){
+#if !defined(OMIT_SQLCIPHER)
+  if( rc==SQLITE_OK ) {
     extern int sqlcipher_query_parameters (sqlite3 *, const char*, const char*, int *);
     if((rc = sqlcipher_query_parameters(db, 0, zOpen, NULL)) != SQLITE_OK) {
       sqlite3Error(db, rc);

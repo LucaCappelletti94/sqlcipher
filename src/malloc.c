@@ -170,7 +170,7 @@ int sqlite3MallocInit(void){
   rc = sqlite3GlobalConfig.m.xInit(sqlite3GlobalConfig.m.pAppData);
   if( rc!=SQLITE_OK ) memset(&mem0, 0, sizeof(mem0));
 /* BEGIN SQLCIPHER */
-#ifdef SQLITE_HAS_CODEC
+#if !defined(OMIT_SQLCIPHER)
   /* install wrapping functions for memory management
      that will wipe all memory allocated by SQLite
      when freed */

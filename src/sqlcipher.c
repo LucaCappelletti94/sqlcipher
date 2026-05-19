@@ -29,7 +29,7 @@
 **  
 */
 /* BEGIN SQLCIPHER */
-#ifdef SQLITE_HAS_CODEC
+#if !defined(OMIT_SQLCIPHER)
 
 #if !defined(SQLCIPHER_OMIT_LOG_DEVICE)
 #if defined(__ANDROID__)

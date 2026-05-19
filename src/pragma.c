@@ -511,7 +511,7 @@ void sqlite3Pragma(
   }
 
 /* BEGIN SQLCIPHER */
-#ifdef SQLITE_HAS_CODEC
+#if !defined(OMIT_SQLCIPHER)
   {
   extern int sqlcipher_pragma(sqlite3*, const char*, int, Parse *, const char *, const char *);
   if(sqlcipher_pragma(db, zDb, iDb, pParse, zLeft, zRight)) { goto pragma_out; } 

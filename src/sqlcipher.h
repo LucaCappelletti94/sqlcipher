@@ -31,7 +31,7 @@
 **  
 */
 /* BEGIN SQLCIPHER */
-#ifdef SQLITE_HAS_CODEC
+#if !defined(OMIT_SQLCIPHER)
 #ifndef SQLCIPHER_H
 #define SQLCIPHER_H
 

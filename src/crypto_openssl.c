@@ -29,7 +29,7 @@
 **
 */
 /* BEGIN SQLCIPHER */
-#ifdef SQLITE_HAS_CODEC
+#if !defined(OMIT_SQLCIPHER)
 #ifdef SQLCIPHER_CRYPTO_OPENSSL
 #include "sqliteInt.h"
 #include "sqlcipher.h"

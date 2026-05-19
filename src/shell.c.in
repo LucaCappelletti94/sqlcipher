@@ -1076,7 +1076,7 @@ static char *one_input_line(ShellState *p, char *zPrior, int isContinuation){
       zResult = shell_readline("");
     }
 /* BEGIN SQLCIPHER */
-#ifdef SQLITE_HAS_CODEC
+#if !defined(OMIT_SQLCIPHER)
     /* Simplistic filtering of input lines to prevent PRAGKA key and 
        PRAGMA rekey statements from being stored in readline history. 
        Note that this will only prevent single line statements, but that
@@ -12037,7 +12037,7 @@ static int do_meta_command(const char *zLine, ShellState *p){
     cli_printf(p->out, "SQLite %s %s\n" /*extra-version-info*/,
           sqlite3_libversion(), sqlite3_sourceid());
 /* BEGIN SQLCIPHER */
-#ifdef SQLITE_HAS_CODEC
+#if !defined(OMIT_SQLCIPHER)
     {
       extern char* sqlcipher_version();
       char *sqlcipher_ver = sqlcipher_version();
@@ -13493,7 +13493,7 @@ int SQLITE_CDECL main(int argc, char **argv){
       /* No-op.  The bail_on_error flag should already be set. */
     }else if( cli_strcmp(z,"-version")==0 ){
 /* BEGIN SQLCIPHER */
-#ifdef SQLITE_HAS_CODEC
+#if !defined(OMIT_SQLCIPHER)
       extern char* sqlcipher_version();
       char *sqlcipher_ver = sqlcipher_version();
       cli_printf(stdout, "%s %s (%d-bit)",
@@ -13658,7 +13658,7 @@ int SQLITE_CDECL main(int argc, char **argv){
       char *zHome;
       char *zHistory;
 /* BEGIN SQLCIPHER */
-#ifdef SQLITE_HAS_CODEC
+#if !defined(OMIT_SQLCIPHER)
       {
       extern char* sqlcipher_version();
       char *sqlcipher_ver = sqlcipher_version();

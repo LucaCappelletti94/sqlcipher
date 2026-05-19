@@ -152,7 +152,7 @@ sqlite3_backup *sqlite3_backup_init(
 #endif
 
 /* BEGIN SQLCIPHER */
-#ifdef SQLITE_HAS_CODEC
+#if !defined(OMIT_SQLCIPHER)
   {
     extern int sqlcipher_find_db_index(sqlite3*, const char*);
     extern void sqlcipher_db_get_key(sqlite3*, int, void**, int*);
@@ -267,7 +267,7 @@ static int backupOnePage(
   const int nCopy = MIN(nSrcPgsz, nDestPgsz);
   const i64 iEnd = (i64)iSrcPg*(i64)nSrcPgsz;
 /* BEGIN SQLCIPHER */
-#ifdef SQLITE_HAS_CODEC
+#if !defined(OMIT_SQLCIPHER)
   extern void *sqlcipher_pager_get_ctx(Pager*);
   /* Use BtreeGetReserveNoMutex() for the source b-tree, as although it is
   ** guaranteed that the shared-mutex is held by this thread, handle
@@ -287,7 +287,7 @@ static int backupOnePage(
   assert( nSrcPgsz==nDestPgsz || sqlite3PagerIsMemdb(pDestPager)==0 );
 
 /* BEGIN SQLCIPHER */
-#ifdef SQLITE_HAS_CODEC
+#if !defined(OMIT_SQLCIPHER)
   /* Backup is not possible if the page size of the destination is changing
   ** and database encryption is in use.
   */

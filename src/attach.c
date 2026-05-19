@@ -227,7 +227,7 @@ static void attachFunc(
   }
 
 /* BEGIN SQLCIPHER */
-#ifdef SQLITE_HAS_CODEC
+#if !defined(OMIT_SQLCIPHER)
   if( rc==SQLITE_OK ){
     extern int sqlcipher_db_attach(sqlite3*, int, const void*, int);
     extern void sqlcipher_db_get_key(sqlite3*, int, void**, int*);

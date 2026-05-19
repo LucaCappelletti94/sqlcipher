@@ -7880,7 +7880,7 @@ int sqlite3PagerWalSystemErrno(Pager *pPager){
 #endif /* SQLITE_OMIT_DISKIO */
 
 /* BEGIN SQLCIPHER */
-#ifdef SQLITE_HAS_CODEC
+#if !defined(OMIT_SQLCIPHER)
 
 int sqlite3pager_is_sj_pgno(Pager *pPager, Pgno pgno) {
   return (PAGER_SJ_PGNO(pPager) == pgno) ? 1 : 0;
