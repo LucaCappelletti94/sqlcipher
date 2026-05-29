@@ -306,79 +306,6 @@ db2 close
 file delete -force test.db
 file delete -force test2.db
 
-# attach an empty encrypted database 
-# on a keyed database when PRAGMA cipher_store_pass = 1
-# and verify different salts
-setup test.db "'testkey'"
-do_test attach-empty-database-with-cipher-store-pass {
-  sqlite_orig db test.db
-  set rc {}
-
-  execsql {
-    PRAGMA  key='testkey';
-    PRAGMA cipher_store_pass = 1;
-    INSERT INTO t1(a,b) VALUES (1,2);
-    ATTACH DATABASE 'test2.db' AS test;
-    CREATE TABLE test.t1(a,b);
-    INSERT INTO test.t1 SELECT * FROM t1;
-    DETACH DATABASE test;
-  }
-
-  sqlite_orig db2 test2.db
-
-  lappend rc [execsql {
-    PRAGMA  key='testkey';
-    SELECT count(*) FROM t1;
-  } db2]
-  lappend rc [string equal [hexio_read test.db 0 16] [hexio_read test2.db 0 16]]
-} {{ok 2} 0}
-db close
-db2 close
-file delete -force test.db
-file delete -force test2.db
-
-# attach an encrypted database
-# without specifying key, verify it attaches
-# correctly when PRAGMA cipher_store_pass = 1
-# is set
-do_test attach-database-with-default-key-using-cipher-store-pass {
-    sqlite_orig db1 test.db  
-    execsql {
-        PRAGMA key = 'testkey';
-        CREATE TABLE t1(a,b);
-        INSERT INTO t1(a,b) VALUES('foo', 'bar');        
-    } db1
-    db1 close
-
-    sqlite_orig db2 test2.db
-    execsql {
-      PRAGMA key = 'testkey';
-      CREATE TABLE t2(a,b);
-      INSERT INTO t2 VALUES ('test1', 'test2'); 
-    } db2
-    db2 close
-
-    sqlite_orig db1 test.db
-    execsql {
-        PRAGMA key = 'testkey';
-        PRAGMA cipher_store_pass = 1;
-        ATTACH DATABASE 'test2.db' as db2;
-        SELECT sqlcipher_export('db2');
-        DETACH DATABASE db2;
-    } db1
-    db1 close
-
-    sqlite_orig db2 test2.db  
-    execsql {
-        PRAGMA key = 'testkey';
-        SELECT * FROM t1;
-    } db2
-
-} {ok foo bar}
-db2 close
-file delete -force test.db
-file delete -force test2.db
-
 # attach an encrypted database
 # where both database have the same
 # key explicitly and verify they have different
@@ -487,33 +414,6 @@ do_test alter-schema {
 } {ok 3 2 teststring}
 db close
 file delete -force test.db
-
-# test alterations of KDF iterations and ciphers
-# rekey then add
-setup test.db "'testkey'"
-do_test verify-errors-for-rekey-kdf-and-cipher-changes {
-  sqlite_orig db test.db
-  execsql {
-    PRAGMA key = 'testkey';
-    PRAGMA rekey_kdf_iter = 1000;
-    PRAGMA rekey_cipher = 'aes-256-ecb';
-  } 
-} {ok {PRAGMA rekey_kdf_iter is no longer supported.} {PRAGMA rekey_cipher is no longer supported.}}
-db close
-file delete -force test.db
-
-
-setup test.db "'testkey'"
-do_test verify-errors-for-cipher-change {
-  sqlite_orig db test.db
-  execsql {
-    PRAGMA key = 'testkey';
-    PRAGMA cipher = 'aes-256-ecb';
-  } 
-} {ok {PRAGMA cipher is no longer supported.}}
-db close
-file delete -force test.db
-
 
 # 1. create a database with a custom page size, 
 # 2. create table and insert operations should work

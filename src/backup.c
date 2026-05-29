@@ -155,19 +155,31 @@ sqlite3_backup *sqlite3_backup_init(
 #if !defined(OMIT_SQLCIPHER)
   {
     extern int sqlcipher_find_db_index(sqlite3*, const char*);
-    extern void sqlcipher_db_get_key(sqlite3*, int, void**, int*);
+    extern int sqlcipher_db_get_key(sqlite3*, int, void**, int*);
     extern void sqlcipher_free(void*, sqlite3_uint64);
-    int srcNKey, destNKey;
-    void *zKey;
+    int srcNKey = 0, destNKey = 0, rc = SQLITE_OK;
+    void *srcZKey = NULL, *destZKey = NULL;
 
-    sqlcipher_db_get_key(pSrcDb, sqlcipher_find_db_index(pSrcDb, zSrcDb), &zKey, &srcNKey);
-    if(srcNKey) sqlcipher_free(zKey, srcNKey);
-    sqlcipher_db_get_key(pDestDb, sqlcipher_find_db_index(pDestDb, zDestDb), &zKey, &destNKey);
-    if(destNKey) sqlcipher_free(zKey, destNKey);
+    if((rc = sqlcipher_db_get_key(pSrcDb, sqlcipher_find_db_index(pSrcDb, zSrcDb), &srcZKey, &srcNKey)) != SQLITE_OK) {
+      goto cleanup;
+    }
+
+    if((rc = sqlcipher_db_get_key(pDestDb, sqlcipher_find_db_index(pDestDb, zDestDb), &destZKey, &destNKey)) != SQLITE_OK) {
+      goto cleanup;
+    }
+
+cleanup:
+    if(srcZKey) sqlcipher_free(srcZKey, srcNKey);
+    if(destZKey) sqlcipher_free(destZKey, destNKey);
+
+    if(rc != SQLITE_OK) {
+      sqlite3ErrorWithMsg(pDestDb, SQLITE_ERROR, "failed to request key from database");
+      return NULL;
+    }
 
     /* either both databases must be plaintext, or both must be encrypted */
-    if((srcNKey == 0 && destNKey > 0) || (srcNKey > 0 && destNKey == 0)) {
-      sqlite3ErrorWithMsg(pDestDb, SQLITE_ERROR, "backup is not supported with encrypted databases");
+    if((srcNKey == 0) != (destNKey == 0)) {
+      sqlite3ErrorWithMsg(pDestDb, SQLITE_ERROR, "backup is not supported with mismatched database types, only plaintext-to-plaintext or encrypted-to-encrypted backups are permitted.");
       return NULL;
     }
   }

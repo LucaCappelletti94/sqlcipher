@@ -113,7 +113,7 @@ void sqlcipher_extra_shutdown(void);
 void sqlcipher_init_memmethods(void);
 int sqlcipher_pragma(sqlite3*, const char*, int, Parse*, const char *, const char*);
 int sqlcipher_db_attach(sqlite3*, int, const void *, int);
-void sqlcipher_db_get_key(sqlite3*, int, void**, int*);
+int sqlcipher_db_get_key(sqlite3*, int, void**, int*);
 int sqlcipher_find_db_index(sqlite3 *, const char *);
 int sqlcipher_query_parameters (sqlite3 *, const char*, const char*, int*);
 

@@ -230,7 +230,7 @@ static void attachFunc(
 #if !defined(OMIT_SQLCIPHER)
   if( rc==SQLITE_OK ){
     extern int sqlcipher_db_attach(sqlite3*, int, const void*, int);
-    extern void sqlcipher_db_get_key(sqlite3*, int, void**, int*);
+    extern int sqlcipher_db_get_key(sqlite3*, int, void**, int*);
     extern void sqlcipher_free(void*, sqlite3_uint64);
     extern int sqlcipher_query_parameters (sqlite3 *, const char*, const char*, int*);
     int nKey;
@@ -261,13 +261,14 @@ static void attachFunc(
       case SQLITE_NULL:
         /* No key specified.  Use the key from URI filename, or if none,
         ** use the key from the main database. */
+        zKey = NULL;
         rc = sqlcipher_query_parameters(db, zName, zPath, &seen);
         if( rc == SQLITE_OK && seen == 0 ){
-          sqlcipher_db_get_key(db, 0, (void**)&zKey, &nKey);
-          if( nKey ) {
+          rc = sqlcipher_db_get_key(db, 0, (void**)&zKey, &nKey);
+          if( rc == SQLITE_OK && zKey && nKey) {
             rc = sqlcipher_db_attach(db, db->nDb-1, zKey, nKey);
           }
-          if(nKey) sqlcipher_free(zKey, nKey);
+          if(zKey) sqlcipher_free(zKey, nKey);
         }
         break;
     }

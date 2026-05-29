@@ -126,7 +126,7 @@ do_test sqlcipher-backup-plain-encrypted {
   lappend rc [catch {sqlite3_backup B db2 main db main}]
   lappend rc [sqlite3_errcode db2]
   lappend rc [sqlite3_errmsg db2]
-} {1 SQLITE_ERROR {backup is not supported with encrypted databases}}
+} {1 SQLITE_ERROR {backup is not supported with mismatched database types, only plaintext-to-plaintext or encrypted-to-encrypted backups are permitted.}}
 db close
 db2 close
 file delete -force test.db
@@ -148,7 +148,7 @@ do_test sqlcipher-backup-encrypted-plain {
   lappend rc [catch {sqlite3_backup B db2 main db main}]
   lappend rc [sqlite3_errcode db2]
   lappend rc [sqlite3_errmsg db2]
-} {1 SQLITE_ERROR {backup is not supported with encrypted databases}}
+} {1 SQLITE_ERROR {backup is not supported with mismatched database types, only plaintext-to-plaintext or encrypted-to-encrypted backups are permitted.}}
 db close
 db2 close
 file delete -force test.db
