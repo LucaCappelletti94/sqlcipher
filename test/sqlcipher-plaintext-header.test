@@ -200,7 +200,7 @@ do_test test-invalid-plaintext-header-sizes {
   sqlite_orig db test.db
   lappend rc [catchsql "
     PRAGMA key = $hexkeyspec;
-    PRAGMA cipher_plaintext_header_size = 4096;
+    PRAGMA cipher_plaintext_header_size = 8192;
     CREATE TABLE t1(a,b);
   "]
   db close
@@ -253,7 +253,7 @@ do_test test-plaintext-header-journal-delete-mode-readable {
     INSERT INTO t1(a,b) VALUES (1,2);
   }
   db close
-  string equal [hexio_read test.db 16 5] "1000010130"
+  string equal [hexio_read test.db 16 5] "2000010130"
 } {1}
 file delete -force test.db
 
@@ -272,7 +272,7 @@ do_test test-plaintext-header-journal-wal-mode-readable {
     INSERT INTO t1(a,b) VALUES (1,2);
   }
   db close
-  string equal [hexio_read test.db 16 5] "1000020230"
+  string equal [hexio_read test.db 16 5] "2000020230"
 } {1}
 file delete -force test.db
 
@@ -383,7 +383,7 @@ do_test test-plaintext-header-migrate-journal-delete {
     SELECT count(*) FROM t1;
   "]
 
-} {01010101010101010101010101010101 53514C69746520666F726D61742033001000010130 {ok 1}}
+} {01010101010101010101010101010101 53514C69746520666F726D61742033002000010130 {ok 1}}
 db close
 file delete -force test.db
 
@@ -423,7 +423,7 @@ do_test test-plaintext-header-migrate-journal-wal {
     PRAGMA journal_mode;
   "]
 
-} {01010101010101010101010101010101 {ok 1 wal 0 1 1} 53514C69746520666F726D61742033001000020230 {ok 1 wal}}
+} {01010101010101010101010101010101 {ok 1 wal 0 1 1} 53514C69746520666F726D61742033002000020230 {ok 1 wal}}
 db close
 file delete -force test.db
 
@@ -466,7 +466,7 @@ do_test test-plaintext-header-migrate-journal-wal-string-key-random-salt {
   "]
 
 
-} {{ok 1 wal 0 1 1} 53514C69746520666F726D61742033001000020230 {ok 1 wal}}
+} {{ok 1 wal 0 1 1} 53514C69746520666F726D61742033002000020230 {ok 1 wal}}
 db close
 file delete -force test.db
 

@@ -300,11 +300,11 @@ file delete -force test.db
 do_test current-version-integrity-check-invalid {
   file copy -force $sampleDir/sqlcipher-5.0-testkey.db test.db
   # corrupt page data 
-  hexio_write test.db 5120 000000
+  hexio_write test.db 10240 000000
   # corrupt iv 
-  hexio_write test.db 12208 000000 
+  hexio_write test.db 24416 000000 
   # corrupt the mac segment 
-  hexio_write test.db 16320 000000
+  hexio_write test.db 32640 000000
   sqlite_orig db test.db
   execsql {
     PRAGMA key = 'testkey';
@@ -314,16 +314,16 @@ do_test current-version-integrity-check-invalid {
 db close
 file delete -force test.db
 
-# try cipher_integrity_check on a corrupted database
+# try cipher_integrity_check on a corrupted last page of a database
 do_test current-version-integrity-check-invalid-last-page {
   file copy -force $sampleDir/sqlcipher-5.0-testkey.db test.db
-  hexio_write test.db 970752 0000
+  hexio_write test.db 974848 0000
   sqlite_orig db test.db
   execsql {
     PRAGMA key = 'testkey';
     PRAGMA cipher_integrity_check;
   } 
-} {ok {page 238 has an invalid size of 2 bytes (expected 4096 bytes)}}
+} {ok {page 120 has an invalid size of 2 bytes (expected 8192 bytes)}}
 db close
 file delete -force test.db
 
@@ -343,10 +343,10 @@ do_test integrity-check-plaintext-header {
     PRAGMA cipher_integrity_check;
   }]
 
-  lappend rc [string equal [hexio_read test.db 16 5] "1000010130"]
+  lappend rc [string equal [hexio_read test.db 16 5] "2000010130"]
   
   hexio_write test.db 120 000000
-  hexio_write test.db 5120 000000
+  hexio_write test.db 10240 000000
 
   lappend rc [execsql {
     PRAGMA cipher_integrity_check;

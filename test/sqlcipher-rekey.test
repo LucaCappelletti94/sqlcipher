@@ -474,7 +474,7 @@ foreach mode {delete wal} {
       PRAGMA page_size;
       PRAGMA journal_mode;
     } 
-  } "ok 5000 4096 $mode"
+  } "ok 5000 8192 $mode"
   db close
   file delete -force test.db
 }
@@ -511,20 +511,20 @@ foreach mode {delete wal} {
       PRAGMA page_size;
       PRAGMA cipher_test_off = fail_rekey;
     }] 
-  } {{1 {An error occurred with PRAGMA key or rekey.}} {5000 4096}}
+  } {{1 {An error occurred with PRAGMA key or rekey.}} {5000 8192}}
   db close
   file delete -force test.db
 }
 
 # create a regular sqlite database with custom page size
-# using the SQLCipher default of 4096. rekey it, and verify results.
+# using the SQLCipher default of 8192. rekey it, and verify results.
 # this will bypass the page size adjustment branch
 # in rekey
 do_test rekey-plaintext-to-encrypted-sqlcipher-default-page-size {
   sqlite_orig db test.db
 
   execsql {
-    PRAGMA page_size = 4096;
+    PRAGMA page_size = 8192;
     CREATE TABLE t1(a,b);
     BEGIN;
   }
@@ -545,7 +545,7 @@ do_test rekey-plaintext-to-encrypted-sqlcipher-default-page-size {
     SELECT count(*) FROM t1;
     PRAGMA page_size;
   } 
-} {ok 5000 4096}
+} {ok 5000 8192}
 db close
 file delete -force test.db
 

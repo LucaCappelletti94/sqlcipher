@@ -412,7 +412,7 @@ do_test attached-database-pragmas {
   execsql {
     COMMIT;
     ATTACH DATABASE 'test2.db' AS db2 KEY 'testkey2'; 
-    PRAGMA db2.cipher_page_size = 8192;
+    PRAGMA db2.cipher_page_size = 16384;
     PRAGMA db2.kdf_iter = 1000;
     PRAGMA db2.cipher_use_hmac = OFF;
     CREATE TABLE db2.t1(a,b);
@@ -424,7 +424,7 @@ do_test attached-database-pragmas {
   sqlite_orig db test2.db
   execsql {
     PRAGMA key = 'testkey2';
-    PRAGMA cipher_page_size = 8192;
+    PRAGMA cipher_page_size = 16384;
     PRAGMA kdf_iter = 1000;
     PRAGMA cipher_use_hmac = OFF;
     SELECT count(*) FROM t1;
@@ -531,7 +531,7 @@ do_test export-database {
     COMMIT;
 
     ATTACH DATABASE 'test2.db' AS db2 KEY 'testkey2'; 
-    PRAGMA db2.cipher_page_size = 8192;
+    PRAGMA db2.cipher_page_size = 16384;
 
     SELECT sqlcipher_export('db2');
 
@@ -542,7 +542,7 @@ do_test export-database {
   sqlite_orig db test2.db
   execsql {
     PRAGMA key = 'testkey2';
-    PRAGMA cipher_page_size = 8192;
+    PRAGMA cipher_page_size = 16384;
     SELECT count(*) FROM t1;
     SELECT count(*) FROM v1;
     SELECT count(*) FROM sqlite_sequence;
@@ -1167,6 +1167,25 @@ do_test migrate-failure-not-readable {
 db close
 file delete -force test.db 
 
+# test migration with an incorrect key 
+do_test migrate-failure-bad-key {
+  file copy -force $sampleDir/sqlcipher-5.0-testkey.db test.db
+  sqlite_orig db test.db
+
+  set rc {}
+  lappend rc [execsql {
+    PRAGMA key = 'badkey';
+    PRAGMA cipher_migrate;
+  }]
+
+  lappend rc [catchsql {
+    SELECT count(*) FROM sqlite_schema;
+  }]
+
+} {{ok 26} {1 {file is not a database}}}
+db close
+file delete -force test.db 
+
 # if cipher_migrate is called on a current-version databse
 # is should do nothing and just report OK
 do_test migrate-current-format-noop {
@@ -1304,7 +1323,7 @@ do_test attach_database_with_non_default_page_size {
     sqlite_orig db test2.db
     execsql {
         PRAGMA key = 'test';
-        PRAGMA cipher_page_size = 8192;
+        PRAGMA cipher_page_size = 16384;
         CREATE TABLE t1(a,b);
         INSERT INTO t1(a,b) values('one for the money', 'two for the show');
         INSERT INTO t1(a,b) values('three to get ready', 'now, go cat, go');
@@ -1313,7 +1332,7 @@ do_test attach_database_with_non_default_page_size {
 
     sqlite_orig db test.db
     execsql {
-        PRAGMA cipher_default_page_size = 8192;
+        PRAGMA cipher_default_page_size = 16384;
         PRAGMA key = 'test';
         ATTACH DATABASE 'test2.db' as test2 KEY 'test';
         SELECT count(*) FROM test2.t1;

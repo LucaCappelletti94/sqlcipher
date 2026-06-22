@@ -426,7 +426,7 @@ do_test custom-pagesize-pragma-cipher-page-size {
 
   execsql {
     PRAGMA key = 'testkey';
-    PRAGMA cipher_page_size = 8192;
+    PRAGMA cipher_page_size = 16384;
     CREATE table t1(a,b);
     BEGIN;
   }
@@ -445,7 +445,7 @@ do_test custom-pagesize-pragma-cipher-page-size {
 
   execsql {
     PRAGMA key = 'testkey';
-    PRAGMA cipher_page_size = 8192;
+    PRAGMA cipher_page_size = 16384;
     SELECT count(*) FROM t1;
   }
 
@@ -460,7 +460,7 @@ do_test custom-pagesize-pragma-pagesize {
 
   execsql {
     PRAGMA key = 'testkey';
-    PRAGMA page_size = 8192;
+    PRAGMA page_size = 16384;
     CREATE table t1(a,b);
     BEGIN;
   }
@@ -479,7 +479,7 @@ do_test custom-pagesize-pragma-pagesize {
 
   execsql {
     PRAGMA key = 'testkey';
-    PRAGMA page_size = 8192;
+    PRAGMA page_size = 16384;
     SELECT count(*) FROM t1;
   }
 
@@ -493,7 +493,7 @@ do_test custom-pagesize-must-match {
   sqlite_orig db test.db
   execsql {
     PRAGMA key = 'testkey';
-    PRAGMA cipher_page_size = 8192;
+    PRAGMA cipher_page_size = 16384;
     CREATE table t1(a,b);
   }
 
@@ -601,9 +601,9 @@ do_test setting-changes-after-key-calls-safe {
     PRAGMA key = 'testkey';
     PRAGMA cache_size = 0;
     SELECT name FROM sqlite_schema WHERE type='table';
-    INSERT INTO t1(a,b) VALUES (2,zeroblob(8192));
+    INSERT INTO t1(a,b) VALUES (2,zeroblob(16384));
     PRAGMA cipher_compatibility=3;
-    INSERT INTO t1(a,b) VALUES (3,zeroblob(8192));
+    INSERT INTO t1(a,b) VALUES (3,zeroblob(16384));
     SELECT name FROM sqlite_schema WHERE type='table';
     SELECT count(*) FROM t1;
   }
@@ -725,7 +725,7 @@ do_test cipher-options-before-keys {
 
   execsql {
     PRAGMA kdf_iter = 1000;
-    PRAGMA cipher_page_size = 8192;
+    PRAGMA cipher_page_size = 16384;
     PRAGMA cipher_use_hmac = OFF;
     PRAGMA key = 'testkey';
     CREATE table t1(a,b);
@@ -1227,7 +1227,7 @@ do_test init-failure-blocks-db-use {
 
   sqlite_orig db :memory:
   execsql {
-    PRAGMA cipher_default_page_size = 4096;
+    PRAGMA cipher_default_page_size = 8192;
   }
 
   set rc
@@ -1259,7 +1259,7 @@ foreach mode {delete wal} {
 
     sqlite_orig db :memory:
     execsql {
-      PRAGMA cipher_default_page_size = 4096;
+      PRAGMA cipher_default_page_size = 8192;
     }
     set rc
   } {{1 {An error occurred with PRAGMA key or rekey.}} {1 {disk I/O error}} {1 {disk I/O error}}}
@@ -1373,7 +1373,7 @@ do_test init-failure-no-mem-leak {
 
   sqlite_orig db :memory:
   execsql {
-    PRAGMA cipher_default_page_size = 4096;
+    PRAGMA cipher_default_page_size = 8192;
   }
 
   lappend rc [expr { $stop_heap - $start_heap }]

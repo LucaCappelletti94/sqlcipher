@@ -353,7 +353,7 @@ static int sqlcipher_get_test_fail() {
 
 static volatile unsigned int default_flags = DEFAULT_CIPHER_FLAGS;
 static volatile int default_kdf_iter = PBKDF2_ITER;
-static volatile int default_page_size = 4096;
+static volatile int default_page_size = 8192;
 static volatile int default_plaintext_header_size = 0;
 static volatile int default_hmac_algorithm = SQLCIPHER_HMAC_SHA512;
 static volatile int default_kdf_algorithm = SQLCIPHER_PBKDF2_HMAC_SHA512;
@@ -3740,7 +3740,7 @@ int sqlcipher_pragma(sqlite3* db, const char *zDb, int iDb, Parse *pParse, const
             break;
 
           default:
-            rc = sqlcipher_ctx_set_pagesize(ctx, 4096);
+            rc = sqlcipher_ctx_set_pagesize(ctx, 8192);
             if (rc != SQLITE_OK) sqlcipher_ctx_set_error(ctx, SQLITE_ERROR);
             rc = sqlcipher_ctx_set_hmac_algorithm(ctx, SQLCIPHER_HMAC_SHA512);
             if (rc != SQLITE_OK) sqlcipher_ctx_set_error(ctx, SQLITE_ERROR);
@@ -3807,7 +3807,7 @@ int sqlcipher_pragma(sqlite3* db, const char *zDb, int iDb, Parse *pParse, const
           break;
 
         default:
-          default_page_size = 4096;
+          default_page_size = 8192;
           default_hmac_algorithm = SQLCIPHER_HMAC_SHA512;
           default_kdf_algorithm = SQLCIPHER_PBKDF2_HMAC_SHA512;
           default_kdf_iter = 256000;

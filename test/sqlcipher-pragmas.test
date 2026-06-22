@@ -182,7 +182,7 @@ do_test verify-pragma-cipher-page-size-default {
         PRAGMA key = 'test';
         PRAGMA cipher_page_size;
     }
-} {ok 4096}
+} {ok 8192}
 db close
 file delete -force test.db
 
@@ -192,10 +192,10 @@ do_test verify-pragma-cipher-page-size-changed {
     sqlite_orig db test.db
     execsql {
         PRAGMA key = 'test';
-        PRAGMA cipher_page_size = 8192;
+        PRAGMA cipher_page_size = 16384;
         PRAGMA cipher_page_size;
     }
-} {ok 8192}
+} {ok 16384}
 db close
 file delete -force test.db
 
@@ -206,11 +206,11 @@ do_test verify-pragma-page-size-encrypted {
     sqlite_orig db test.db
     execsql {
         PRAGMA key = 'test';
-        PRAGMA page_size = 8192;
+        PRAGMA page_size = 16384;
         PRAGMA page_size;
         PRAGMA cipher_page_size;
     }
-} {ok 8192 8192}
+} {ok 16384 16384}
 db close
 file delete -force test.db
 
@@ -220,11 +220,11 @@ file delete -force test.db
 do_test verify-pragma-page-size-plaintext {
     sqlite_orig db test.db
     execsql {
-        PRAGMA page_size = 8192;
+        PRAGMA page_size = 16384;
         PRAGMA page_size;
         PRAGMA cipher_page_size;
     }
-} {8192}
+} {16384}
 db close
 file delete -force test.db
 
@@ -314,7 +314,7 @@ do_test verify-cipher_settings_default {
         PRAGMA key = 'test';
         PRAGMA cipher_settings;
     }
-} {ok {PRAGMA kdf_iter = 256000;} {PRAGMA cipher_page_size = 4096;} {PRAGMA cipher_aead = 1;} {PRAGMA cipher_use_hmac = 0;} {PRAGMA cipher_hmac_fast_kdf = 0;} {PRAGMA cipher_plaintext_header_size = 0;} {PRAGMA cipher_hmac_algorithm = HMAC_SHA512;} {PRAGMA cipher_kdf_algorithm = PBKDF2_HMAC_SHA512;}}
+} {ok {PRAGMA kdf_iter = 256000;} {PRAGMA cipher_page_size = 8192;} {PRAGMA cipher_aead = 1;} {PRAGMA cipher_use_hmac = 0;} {PRAGMA cipher_hmac_fast_kdf = 0;} {PRAGMA cipher_plaintext_header_size = 0;} {PRAGMA cipher_hmac_algorithm = HMAC_SHA512;} {PRAGMA cipher_kdf_algorithm = PBKDF2_HMAC_SHA512;}}
 db close
 file delete -force test.db
 
@@ -345,7 +345,7 @@ do_test verify-cipher_default_settings_default {
     execsql {
         PRAGMA cipher_default_settings;
     }
-} {{PRAGMA cipher_default_kdf_iter = 256000;} {PRAGMA cipher_default_page_size = 4096;} {PRAGMA cipher_default_aead = 1;} {PRAGMA cipher_default_use_hmac = 0;} {PRAGMA cipher_default_hmac_fast_kdf = 0;} {PRAGMA cipher_default_plaintext_header_size = 0;} {PRAGMA cipher_default_hmac_algorithm = HMAC_SHA512;} {PRAGMA cipher_default_kdf_algorithm = PBKDF2_HMAC_SHA512;}}
+} {{PRAGMA cipher_default_kdf_iter = 256000;} {PRAGMA cipher_default_page_size = 8192;} {PRAGMA cipher_default_aead = 1;} {PRAGMA cipher_default_use_hmac = 0;} {PRAGMA cipher_default_hmac_fast_kdf = 0;} {PRAGMA cipher_default_plaintext_header_size = 0;} {PRAGMA cipher_default_hmac_algorithm = HMAC_SHA512;} {PRAGMA cipher_default_kdf_algorithm = PBKDF2_HMAC_SHA512;}}
 db close
 file delete -force test.db
 
