@@ -33,7 +33,9 @@
 #ifdef SQLCIPHER_CRYPTO_CC
 
 #ifndef SQLCIPHER_CRYPTO_CC_FORCE
-#error "The CommonCrypto provider is deprecated, unsupported, and won't work with SQLCipher v5 AEAD. To use anyway, set -DSQLCIPHER_CRYPTO_CC_FORCE to override and disable AEAD before use." 
+#error \
+  "The CommonCrypto provider is deprecated, unsupported, won't work with SQLCipher v5 AEAD, and won't shield journal/WAL checksums. "
+  "It should not be used. To accept these risks and use anyway, set -DSQLCIPHER_CRYPTO_CC_FORCE to override and disable AEAD before use." 
 #endif
 
 #include "sqlcipher.h"

@@ -4642,4 +4642,16 @@ sqlite3_file *sqlite3WalFile(Wal *pWal){
   return pWal->pWalFd;
 }
 
+/* BEGIN SQLCIPHER */
+#if !defined(OMIT_SQLCIPHER)
+
+u32 sqlcipher_wal_salt(Wal *pWal, int i) {
+  if(!pWal) return 0;
+  return pWal->hdr.aSalt[i == 0 ? 0 : 1]; 
+}
+
+#endif
+/* END SQLCIPHER */
+
+
 #endif /* #ifndef SQLITE_OMIT_WAL */

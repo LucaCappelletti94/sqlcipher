@@ -7911,6 +7911,19 @@ u32 sqlcipher_pager_sectorSize(Pager *pPager) {
   return pPager->sectorSize;
 }
 
+i64 sqlcipher_pager_journalOff(Pager *pPager) {
+  return pPager->journalOff;
+}
+
+u32 sqlcipher_pager_cksumInit(Pager *pPager) {
+  return pPager->cksumInit;
+}
+
+u32 sqlcipher_pager_wal_salt(Pager *pPager, int i) {
+  extern u32 sqlcipher_wal_salt(Wal *, int);
+  return sqlcipher_wal_salt(pPager->pWal, i);
+}
+
 #endif
 /* END SQLCIPHER */
 

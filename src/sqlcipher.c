@@ -100,7 +100,9 @@ void sqlite3pager_reset(Pager *pPager);
 sqlite3_file* sqlcipher_pager_sjfd(Pager*);
 i64 sqlcipher_pager_journalHdr(Pager*);
 u32 sqlcipher_pager_sectorSize(Pager*);
-
+i64 sqlcipher_pager_journalOff(Pager*);
+u32 sqlcipher_pager_cksumInit(Pager*);
+u32 sqlcipher_pager_wal_salt(Pager *pPager, int);
 /* end extensions defined in pager.c */
 
 #if !defined (SQLCIPHER_CRYPTO_CC) \
@@ -190,6 +192,7 @@ typedef struct {
   unsigned char *hmac_key;
   unsigned char *pass;
   unsigned char *subkey;
+  unsigned char *cksum_key;
 } cipher_ctx;
 
 
@@ -925,11 +928,19 @@ cleanup:
   sqlcipher_shutdown = 1;
 }
 
-static void sqlcipher_shield(unsigned char *in, int sz) {
+
+static void sqlcipher_xor(unsigned char *x, int x_sz, unsigned char *y, int y_sz) {
   int i = 0;
-  for(i = 0; i < sz; i++) {
-    in[i] ^= sqlcipher_shield_mask[i % sqlcipher_shield_mask_sz];
+  
+  if(x == NULL || y == NULL || x_sz < 1 || y_sz < 1) return;
+
+  for(i = 0; i < x_sz; i++) {
+    x[i] ^= y[i % y_sz];
   }
+}
+
+static void sqlcipher_shield(unsigned char *in, int sz) {
+  sqlcipher_xor(in, sz, sqlcipher_shield_mask, sqlcipher_shield_mask_sz);
 }
 
 /* constant time memset using volitile to avoid having the memset
@@ -1380,6 +1391,7 @@ static void sqlcipher_cipher_ctx_free(sqlcipher_ctx* ctx, cipher_ctx **iCtx) {
   if(c_ctx->key) sqlcipher_free(c_ctx->key, ctx->key_sz * 2); /* free encryption and MAC key together */
   if(c_ctx->pass) sqlcipher_free(c_ctx->pass, c_ctx->pass_sz);
   if(c_ctx->subkey) sqlcipher_free(c_ctx->subkey, ctx->key_sz);
+  if(c_ctx->cksum_key) sqlcipher_free(c_ctx->cksum_key, ctx->key_sz);
   sqlcipher_free(c_ctx, sizeof(cipher_ctx));
   *iCtx = NULL;
 }
@@ -1416,6 +1428,12 @@ static int sqlcipher_cipher_ctx_init(sqlcipher_ctx *ctx, cipher_ctx **iCtx) {
   /* subkey to be used with AEAD */
   if(!(c_ctx->subkey = (unsigned char *) sqlcipher_malloc(ctx->key_sz))) {
     sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_MEMORY, "%s: failed to allocate subkey", __func__);
+    goto error;
+  }
+
+  /* key to be used for checksum shielding */
+  if(!(c_ctx->cksum_key = (unsigned char *) sqlcipher_malloc(ctx->key_sz))) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_MEMORY, "%s: failed to allocate cksum_key", __func__);
     goto error;
   }
 
@@ -1498,6 +1516,7 @@ static int sqlcipher_cipher_ctx_copy(sqlcipher_ctx *ctx, cipher_ctx *target, cip
   void *key = target->key; 
   void *hmac_key = target->hmac_key;
   void *subkey = target->subkey;
+  void *cksum_key = target->cksum_key;
 
   sqlcipher_log(SQLCIPHER_LOG_DEBUG, SQLCIPHER_LOG_CORE, "%s: target=%p, source=%p", __func__, target, source);
   if(target->pass) sqlcipher_free(target->pass, target->pass_sz);
@@ -1506,6 +1525,9 @@ static int sqlcipher_cipher_ctx_copy(sqlcipher_ctx *ctx, cipher_ctx *target, cip
   target->key = key; /* restore pointer to previously allocated key data */
   target->hmac_key = hmac_key; /* restore pointer to previously allocated hmac key data */
   memcpy(target->key, source->key, ctx->key_sz * 2); /* copy encryption key and hmac key */
+
+  target->cksum_key = cksum_key; /* restore checksum key pointers */
+  memcpy(target->cksum_key, source->cksum_key, ctx->key_sz);
 
   target->subkey = subkey; /* restore subkey pointers */
 
@@ -2312,8 +2334,27 @@ static int sqlcipher_cipher_ctx_key_derive(sqlcipher_ctx *ctx, cipher_ctx *c_ctx
       goto error;
     }
   }
+
+  if(ctx->provider->aead_kbkdf) {
+    if((rc = ctx->provider->aead_kbkdf(
+      ctx->provider_ctx,
+      c_ctx->key, ctx->key_sz,
+      (unsigned char *)"sqlitecksums", 12,
+      c_ctx->cksum_key
+    )) != SQLITE_OK) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: error occurred deriving checksum key", __func__, rc);
+      goto error;
+    }
+  } else {
+    if((rc = ctx->provider->random(ctx->provider_ctx, c_ctx->cksum_key, ctx->key_sz)) != SQLITE_OK) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: error occurred generating random checksum key", __func__, rc);
+      goto error;
+    }
+  }
+  
   sqlcipher_shield(c_ctx->key, ctx->key_sz);
   sqlcipher_shield(c_ctx->hmac_key, ctx->key_sz);
+  sqlcipher_shield(c_ctx->cksum_key, ctx->key_sz);
   c_ctx->derive_key = 0;
   return SQLITE_OK;
 
@@ -2322,6 +2363,7 @@ error:
 
   xoshiro_randomness(c_ctx->key, ctx->key_sz);
   xoshiro_randomness(c_ctx->hmac_key, ctx->key_sz);
+  xoshiro_randomness(c_ctx->cksum_key, ctx->key_sz);
   return SQLITE_ERROR;
 }
 
@@ -5206,6 +5248,172 @@ static int sqlcipherClose(sqlite3_file *pFile){
   return pFile->pMethods->xClose(pFile);
 }
 
+/* Functions for checksum shielding in rollback journals and WAL files
+ *
+ * SQLite calculates a 4 byte checksum over the page content that is written to rollback
+ * journals and an 8 byte checksum for WAL files. Unfortunately, since SQLCipher is now a VFS 
+ * (not an inline CODEC) those checksums are calculated over the plaintext of the page data
+ * before SQLCipher's encryption happens. Unprotected, the checksums are a plaintext
+ * oracle. These functions make a best-effort attempt to protect the checksums before they
+ * are written to the journal or wal. 
+ * 
+ * Since we do not have a place to store additional IVs, tags, etc, this approach uses
+ * simple shielding by XORing the bytes of the checksum with a derived key. The key is
+ * generated using the provider aead_kbkdf function using a checksum master key
+ * (derived at initialization), and then a subkey is derived using a context including the
+ * frame / record start offset, and either the journal cksumInit value (which will change
+ * for each transaction) or the WAL salt (changing for checkpoint or restart). Both are referred
+ * to as salt going forward. 
+ *
+ * This model provides a reasonable amount of protection for the checksums. The combination of
+ * the salt and the offset means that each record's checksum will be encrypted with a distinct
+ * key up to 2^16 or 2^32 (birthday bound for the salt and ouput truncation). This will protect
+ * the value of the checksum, except cases like the following where it could be possible to
+ * detect a many-time-pad:
+ *
+ * 1. ability to observe multiple snapshots of files (before and after) over time when
+ *    record rewrites occur under the same salt (e.g. wal checksum rewrites from rollbacks)
+ * 2. observation of a very large corpus of files allowing comparison and discovery of
+ *    files with the same salt values
+ *
+ * Because these would effectively expose different ciphertext checksums encrypted under
+ * the same key the protections would be limited in those cases. The practical implications
+ * are that:
+ *
+ * 1. comparisons of checksums under a common key could leak (i.e. plaintext
+ *    checksum 0 XOR checksum 1) leaking checksum data (e.g. equality)
+ * 2. if the checksum is known in advance, then the key for that salt and record
+ *    combination could be recovered entirely, revealing all checksums encrypted
+ *    under that subkey
+ * 3. if enough samples are collected, statistical recovery of the pad could be possible
+ *
+ * That said, journal and WAL files have the following properties:
+ *
+ * 1. they are temporary files frequently deleted or overwritten
+ * 2. they are rarely archived
+ * 3. it is relatively difficult to observe changes to them "in flight"
+ * 4. for WAL specifically, it is extremely difficult to predict
+ *    a checksum even for a known plaintext because it is computed
+ *    over all previous frames in the file
+ *
+ * In addition, these checksums are never used for cryptographic integrity. All the actual
+ * page data is encrypted with AES-GCM or CBC+HMAC with tag verification. The checksums
+ * are never used until after tags are verified, and can't be abused to attack the protections
+ * on the actual encrypted data. In other words the absolute worst case is that an attacker
+ * who compromised a subkey could confirm plaintext record values (that they already know) or
+ * verify guesses of page contents using checksums encrypted under that subkey. 
+ *
+ * Critically, this level of security is always better, and never worse, than
+ * leaving the checksums plaintext.  
+ */
+
+static int sqlcipher_shield_journal_cksum(sqlcipher_ctx *ctx, void *zBuf, sqlite_int64 iOfst, int iAmt, i64 record_ofst, u32 cksumInit) {
+  int in_record_ofst, cksum_ofst;
+
+  in_record_ofst = (int) (iOfst - record_ofst); /* offset into the current record for operation */
+  cksum_ofst = 4 + ctx->page_sz; /* where, in a given rollback journal record, the checksum livs */ 
+
+  if(in_record_ofst == cksum_ofst && iAmt == 4 && ctx->provider->aead_kbkdf) {
+    int rc;
+    unsigned char k[32];
+    unsigned char context[12];
+
+    /* context for kbkdf is cksumInit (changes each transaction) || record_ofst (changes each record)
+     * note that this context layout should always be different than that for WAL */
+    sqlite3Put4byte(&context[0], cksumInit);
+    sqlite3Put4byte(&context[4], (u32)(record_ofst >> 32)); /* high half */
+    sqlite3Put4byte(&context[8], (u32)record_ofst); /* low half */
+
+    /* The read and write keys are the same in all cases except for rekey. During a rekey operation
+     * read_ctx and write_ctx have different keys, but the journal is always written with the read_key
+     * (see sqlite3_rekey-v2 SQLCIPHER_JOURNAL_OP case). Since the journal will always be written with
+     * the read key, the checksum should be shielded with it as well. If a rekey succeeds the journal
+     * is removed. If a journal is being used for recovery, it would be read with the read key as well */
+    sqlcipher_shield(ctx->read_ctx->cksum_key, ctx->key_sz);
+    rc = ctx->provider->aead_kbkdf(
+      ctx->provider_ctx,
+      ctx->read_ctx->cksum_key, ctx->key_sz,
+      context, sizeof(context),
+      k
+    );
+    sqlcipher_shield(ctx->read_ctx->cksum_key, ctx->key_sz);
+
+    if(rc != SQLITE_OK) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_VFS, "%s: aead_kbkdf failed for record at offset %lld %d", __func__, record_ofst, rc);
+      return rc;
+    }
+
+    sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_VFS, "%s: shielding journal record checksum", __func__);
+    sqlcipher_xor((unsigned char *) zBuf, 4, k, 4);
+
+    xoshiro_randomness(k, sizeof(k));
+  }
+  return SQLITE_OK;
+}
+
+static int sqlcipher_shield_wal_cksum(sqlcipher_ctx *ctx, void *zBuf, sqlite_int64 iOfst, int iAmt, u32 salt0, u32 salt1){
+  sqlite_int64 rel_ofst;
+  sqlite_int64 frame_start_ofst;
+  int in_frame_ofst;
+
+  if(iOfst < 32) return SQLITE_OK;
+
+  rel_ofst = iOfst - SQLCIPHER_WAL_HDRSIZE; /* offset excluding the header */
+  frame_start_ofst = SQLCIPHER_WAL_HDRSIZE + ((rel_ofst / (ctx->page_sz+SQLCIPHER_WAL_FRAME_HDRSIZE)) * (ctx->page_sz+SQLCIPHER_WAL_FRAME_HDRSIZE)); /* where the actual frame starts */
+  in_frame_ofst = rel_ofst % (ctx->page_sz + SQLCIPHER_WAL_FRAME_HDRSIZE); /* file offset of the current op into the frame */
+
+  /* The wal checksum is an 8 byte value (2x32-bit) at offset 16 and 20 respectively. Because the header
+   * frame header, page size and sector size must all be multiples of 8, a WAL read/write
+   * begins and ends on a 8 byte boundary, so the checksum will always be fully contained */
+
+  assert((in_frame_ofst & 7) == 0); /* offset is a multiple of 8 */
+  assert((iAmt & 7) == 0); /* amount also a multiple of 8 */
+  assert( 
+    !(in_frame_ofst < 24 && in_frame_ofst + iAmt > 16) /* does include any bytes in the range 16-24 */
+    || (in_frame_ofst <= 16 && in_frame_ofst + iAmt >= 24) /* includes all the bytes in the range 16-24 */
+  ); 
+
+  if(in_frame_ofst <= 16 && in_frame_ofst + iAmt >= 24 && ctx->provider->aead_kbkdf) { /* operation spans the checksum bytes */
+    /* checksum starts 16 bytes into the each frame. If the in frame offset of the zBuf is 8, then
+     * we must subtract that from 16 to get the position in zBuf for the checksum. The same stands for 0 and 16,
+     * which are the only other 8-byte aligned values that will fall through into this block */
+    unsigned char k[32];
+    unsigned char context[12];
+    int rc;
+    u32 frame_idx = (u32)(rel_ofst / (ctx->page_sz + SQLCIPHER_WAL_FRAME_HDRSIZE)); /* the sequential index of this frame in the wal */
+
+    /* context for kbkdf is salt0 (incremented on restart) || salt1 (random per WAL) || frame_idx (changes each frame) 
+     * note that this context layout should always be different than that for journal files */
+    sqlite3Put4byte(&context[0], salt0);
+    sqlite3Put4byte(&context[4], salt1);
+    sqlite3Put4byte(&context[8], frame_idx);
+
+    /* The read and write keys are the same in all cases except for rekey, which forces the journal mode
+     * to DELETE on the database before re-encrypting. This means that the read and write key are identical
+     * and we just use the former for consistency with the journal code above. */
+    sqlcipher_shield(ctx->read_ctx->cksum_key, ctx->key_sz);
+    rc = ctx->provider->aead_kbkdf(
+      ctx->provider_ctx,
+      ctx->read_ctx->cksum_key, ctx->key_sz,
+      context, sizeof(context),
+      k
+    );
+    sqlcipher_shield(ctx->read_ctx->cksum_key, ctx->key_sz);
+
+    if(rc != SQLITE_OK) {
+      sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_VFS, "%s: aead_kbkdf failed for frame at %lld %d", __func__, frame_start_ofst, rc);
+      return rc;
+    }
+
+    sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_VFS, "%s: shielding WAL frame checksum", __func__);
+    sqlcipher_xor(((unsigned char *) zBuf) + (16 - in_frame_ofst), 8, k, 8);
+
+    xoshiro_randomness(k, sizeof(k));
+  }
+  return SQLITE_OK;
+}
+
+
 static int sqlcipher_read_db(
   sqlite3_file *pFile, 
   void *zBuf, 
@@ -5315,7 +5523,8 @@ static int sqlcipher_read_journal(
   void *zBuf, 
   int iAmt, 
   sqlite_int64 iOfst,
-  sqlcipher_ctx *ctx
+  sqlcipher_ctx *ctx,
+  int is_main_journal
 ) {
   int rc;
   sqlcipher_file *fd = (sqlcipher_file *)pFile;
@@ -5323,13 +5532,24 @@ static int sqlcipher_read_journal(
   unsigned char pgno_raw[4];
   Pgno page = 0;
 
+
   sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_VFS, 
     "%s: fd=%p,zBuf=%p,iAmt=%d,iOfst=%lld,ctx=%p,ctx->page_size=%d",
     __func__, fd, zBuf, iAmt, iOfst, ctx, ctx->page_sz);
 
+
   if (iOfst == 0 || iAmt != ctx->page_sz) { /* either the initial journal header, or not a full page */
     sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_VFS, "%s: optimized JOURNAL read passthrough", __func__);
-    return subfd->pMethods->xRead(subfd, zBuf, iAmt, iOfst);
+    rc = subfd->pMethods->xRead(subfd, zBuf, iAmt, iOfst);
+    if(rc == SQLITE_OK && is_main_journal) {
+      Pager *pPager = sqlite3BtreePager(ctx->pBt); 
+     
+      /* pPager->journalOff has already been advanced to the end of the record at the time
+       * this read occurs, so back it off to the start of the page. see pager.c:pager_playback_one_page
+       * and it's caller pager.c:pager_playback */
+      rc = sqlcipher_shield_journal_cksum(ctx, zBuf, iOfst, iAmt, sqlcipher_pager_journalOff(pPager) - 4 - ctx->page_sz - 4, sqlcipher_pager_cksumInit(pPager));
+    }
+    return rc; 
   }
 
   /* this is a full page read, first read the page number directly */ 
@@ -5366,7 +5586,8 @@ static int sqlcipher_read_wal(
   sqlite3_file *subfd = ORIGFILE(pFile);
   unsigned char pgno_raw[4];
   Pgno page = 0;
-
+  Pager *pPager = sqlite3BtreePager(ctx->pBt); 
+  
   sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_VFS, 
     "%s: fd=%p,zBuf=%p,iAmt=%d,iOfst=%lld,ctx=%p,ctx->page_size=%d",
     __func__, fd, zBuf, iAmt, iOfst, ctx, ctx->page_sz);
@@ -5414,13 +5635,20 @@ static int sqlcipher_read_wal(
 
     if(rc != SQLITE_OK) {
       sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_VFS, "%s: error processing page %d", __func__, rc);
+      return rc;
     }
-    return rc;
+
+    /* this read includes a frame header, decrypt the checksum */
+    return sqlcipher_shield_wal_cksum(ctx, zBuf, iOfst, iAmt, sqlcipher_pager_wal_salt(pPager, 0), sqlcipher_pager_wal_salt(pPager, 1));
   }
 
   rc = subfd->pMethods->xRead(subfd, zBuf, iAmt, iOfst);
   sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_VFS, "%s: optimized WAL header read passthrough", __func__);
 
+  /* short / passthrough read also may require checksum decrypt */
+  if(rc == SQLITE_OK)
+    rc = sqlcipher_shield_wal_cksum(ctx, zBuf, iOfst, iAmt, sqlcipher_pager_wal_salt(pPager, 0), sqlcipher_pager_wal_salt(pPager, 1));
+   
   return rc;
 }
 
@@ -5440,11 +5668,10 @@ static int sqlcipherRead(
   if(!ctx || SQLCIPHER_FLAG_GET(fd->flags, SQLCIPHER_FILE_PASSTHROUGH_READ) || fd->type == SQLCIPHER_OTHER) {
     /* direct read w/o decryption when no context attached or full passthrough enabled */ 
     return subfd->pMethods->xRead(subfd, zBuf, iAmt, iOfst);
-  } else if (fd->type == SQLCIPHER_JOURNAL || fd->type == SQLCIPHER_SUBJOURNAL) { 
-    /* sqlcipher read_journal does not differentiate between main journals and subjournals like
-     * the write counterparts because there is no special handling for journal headers. All journal
-     * reads for non-page data are sub-page sized. */
-    return sqlcipher_read_journal(pFile, zBuf, iAmt, iOfst, ctx);
+  } else if (fd->type == SQLCIPHER_JOURNAL) {
+    return sqlcipher_read_journal(pFile, zBuf, iAmt, iOfst, ctx, 1);
+  } else if (fd->type == SQLCIPHER_SUBJOURNAL) { 
+    return sqlcipher_read_journal(pFile, zBuf, iAmt, iOfst, ctx, 0);
   } else if (fd->type == SQLCIPHER_WAL) {
     return sqlcipher_read_wal(pFile, zBuf, iAmt, iOfst, ctx);
   }
@@ -5526,21 +5753,30 @@ static int sqlcipher_write_journal(
   sqlite3_file *subfd = ORIGFILE(pFile);
   unsigned char pgno_raw[4];
   Pgno page = 0;
+  Pager *pPager = sqlite3BtreePager(ctx->pBt);
 
   sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_VFS, 
     "%s: fd=%p,zBuf=%p,iAmt=%d,iOfst=%lld,ctx=%p,ctx->page_size=%d",
     __func__, fd, zBuf, iAmt, iOfst, ctx, ctx->page_sz);
-  
+
+
+  if(is_main_journal) {
+    /* pPager->journalOff is the start of the current record when the write occurs
+     * see pager.c:pagerAddPageToRollbackJournal */
+    if((rc = sqlcipher_shield_journal_cksum(ctx, b, iOfst, iAmt, sqlcipher_pager_journalOff(pPager), sqlcipher_pager_cksumInit(pPager))) != SQLITE_OK) {
+      return rc;
+    }
+  }
+ 
   if (iOfst == 0 || iAmt != ctx->page_sz) { /* either the initial journal header, or not a full page */
     sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_VFS, "%s: optimized JOURNAL write passthrough", __func__);
     return subfd->pMethods->xWrite(subfd, zBuf, iAmt, iOfst);
   } 
 
   if(is_main_journal) {
-    Pager *pPager = sqlite3BtreePager(ctx->pBt);
-    u32 header_sz = sqlcipher_pager_sectorSize(pPager); /* journal header is always sector sized */
     i64 header_ofst = sqlcipher_pager_journalHdr(pPager); /* current position of journalHeader */
-
+    u32 header_sz = sqlcipher_pager_sectorSize(pPager); /* journal header is always sector sized */ 
+  
     /* any sector-aligned full-page write must occur inside the current header */
     assert((iOfst % header_sz != 0) || (iOfst >= header_ofst && iOfst < header_ofst + header_sz));
 
@@ -5586,17 +5822,34 @@ static int sqlcipher_write_wal(
   sqlite_int64 startOfst = iOfst;
   sqlite_int64 pageOfst = 0;
   int sync = 0;
-
+  sqlite_int64 rel_ofst, frame_start_ofst;
+  int in_frame_ofst;
+  Pager *pPager = sqlite3BtreePager(ctx->pBt); 
+ 
   sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_VFS, 
     "%s: fd=%p,zBuf=%p,iAmt=%d,iOfst=%lld,ctx=%p,ctx->page_size=%d",
     __func__, fd, zBuf, iAmt, iOfst, ctx, ctx->page_sz);
 
-  if( iOfst < SQLCIPHER_WAL_HDRSIZE || (iOfst - SQLCIPHER_WAL_HDRSIZE) % (ctx->page_sz + SQLCIPHER_WAL_FRAME_HDRSIZE) < SQLCIPHER_WAL_FRAME_HDRSIZE ) { 
-    /* this is a write of the wal header, or the write of a frame header, allow it to pass through */
-    sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_VFS, "%s: optimized WAL write passthrough", __func__);
+  if(iOfst < SQLCIPHER_WAL_HDRSIZE) {
+    /* this is a write of the wal header, allow it to pass through */
+    sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_VFS, "%s: optimized WAL header write passthrough", __func__);
     return subfd->pMethods->xWrite(subfd, zBuf, iAmt, iOfst);
   } 
-  
+
+  rel_ofst = iOfst - SQLCIPHER_WAL_HDRSIZE; /* offset excluding the header */
+  frame_start_ofst = SQLCIPHER_WAL_HDRSIZE + ((rel_ofst / (ctx->page_sz+SQLCIPHER_WAL_FRAME_HDRSIZE)) * (ctx->page_sz+SQLCIPHER_WAL_FRAME_HDRSIZE)); /* where the actual frame starts */
+  in_frame_ofst = rel_ofst % (ctx->page_sz + SQLCIPHER_WAL_FRAME_HDRSIZE); /* offset of the current write into the frame */
+
+  if((rc = sqlcipher_shield_wal_cksum(ctx, b, iOfst, iAmt, sqlcipher_pager_wal_salt(pPager, 0), sqlcipher_pager_wal_salt(pPager, 1))) != SQLITE_OK) { 
+    return rc;
+  }
+
+  /* if the writing to the frame header (whole or split), write pasthrough */ 
+  if (in_frame_ofst < 24) {
+   sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_VFS, "%s: WAL frame header write passthrough", __func__);
+   return subfd->pMethods->xWrite(subfd, zBuf, iAmt, iOfst);
+  }
+
   /* now writing page data, outside the WAL header or the frame header. from here on
    * all operations in sqlcipher_write_wal will be relative to startOfst, instead of iOft. startOfst may be adjusted
    * for partial page writes */
@@ -5608,10 +5861,10 @@ static int sqlcipher_write_wal(
      * partial page, decrypt it, update it, the writ write it. Allocate a
      * temporary storage space for the full page to do so */
 
-    startOfst = SQLCIPHER_WAL_HDRSIZE + ((ctx->page_sz + SQLCIPHER_WAL_FRAME_HDRSIZE) * ((iOfst - SQLCIPHER_WAL_HDRSIZE) / (ctx->page_sz + SQLCIPHER_WAL_FRAME_HDRSIZE))) + SQLCIPHER_WAL_FRAME_HDRSIZE; /* the actual start of the page data */
+    startOfst = frame_start_ofst + SQLCIPHER_WAL_FRAME_HDRSIZE; /* the actual start of the page data */
     pageOfst = iOfst - startOfst;  /* offset inside the page */
     
-    sqlcipher_log(SQLCIPHER_LOG_INFO, SQLCIPHER_LOG_VFS,
+    sqlcipher_log(SQLCIPHER_LOG_TRACE, SQLCIPHER_LOG_VFS,
       "%s: WAL padding write iOfst=%d, iAmt=%d, startOfst=%lld, newOfst=%lld", __func__, iOfst, iAmt, startOfst, pageOfst);
 
     /* write requests for more than one page worth of data are not permitted. */
