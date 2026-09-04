@@ -1,6 +1,45 @@
 # SQLCipher Change Log
 Notable changes to this project are documented in this file.
 
+## [5.0.0-beta] - (? 2026 - [5.0.0-beta changes])
+
+***WARNING***: This beta includes major functional, API, and  behavioral changes that are NOT COMPATIBLE
+with SQLCipher 4 and earlier by default. Migration and backwards-compatibility options are available
+but require application code changes. This should only be used for beta testing at this time, not in
+production releases.
+
+- Replaces the pager Codec hook with SQLite Virtual Filesystem (VFS) shims
+- Reverts many files previously modified by SQLCipher to unmodified SQLite sources
+- Makes AEAD encryption using AES-256-GCM the new default, with per-page subkeys
+  derived by a KBKDF (replacing AES-256-CBC+HMAC-SHA512)
+- Expands `sqlcipher_provider` interface with AEAD, KBKDF, metadata, and self-test functions
+- Adds AEAD and KBKDF implementations to the OpenSSL and LibTomCrypt providers
+- Adds `PRAGMA cipher_aead` / `PRAGMA cipher_default_aead` to turn AEAD mode on or off
+- Adds `PRAGMA cipher_hmac_fast_kdf` / `PRAGMA cipher_default_hmac_fast_kdf` to control
+  the use of legacy HMAC key derivation logic
+- Adds `PRAGMA rekey` support for converting plaintext databases to encrypted and vice versa
+- Shields rollback journal and WAL checksum values calculated over plaintext page content
+- Increases default page size to 8192 bytes (from 4096)
+- Increases default PBKDF2-HMAC-SHA512 iterations to 512,000 (from 256,000)
+- Adds a reference test database (`sqlcipher-5.0-testkey.db`) for the v5 format
+- __BREAKING CHANGE__: The default AEAD mode, 8192 byte page size, and KDF iterations are NOT
+  backwards-compatible with previous SQLCipher v4 databases by default. Use `PRAGMA cipher_compatibility`
+  to open old databases or `PRAGMA cipher_migrate` to convert them.
+- __BREAKING CHANGE__: Requires `-DSQLITE_USE_URI` and `-DSQLITE_DIRECT_OVERFLOW_READ=0` at compile time
+- __BREAKING CHANGE__: Keying `:memory:` databases is now an explicit misuse error
+- __BREAKING CHANGE__: Removes all historically deprecated PRAGMA settings: `cipher_store_pass`, `cipher`,
+  `fast_kdf_iter`, `cipher_hmac_pgno`, `cipher_hmac_salt_mask`, `rekey_cipher`, and `rekey_kdf_iter`
+- __BREAKING CHANGE__: Renames internal functions in `sqlcipher.h` (not part of the SQLite API) as
+  part of the VFS redesign
+- __BREAKING CHANGE__: Makes the CommonCrypto provider deprecated and requires a special override
+    define to compile it. The CommonCrypto does not support GCM so it can't be used with the new AEAD default.
+- __BREAKING CHANGE__: Includes SQLCipher at compile time by default, so it is no longer necessary to define
+    the `SQLITE_HAS_CODEC` macro. SQLCipher can be disabled using `OMIT_SQLCIPHER` instead.
+
+**IMPORTANT NOTE**: This release contains API, ABI, and library behavioral changes.
+Library integrators that manage `SONAME` are advised to update the version at build time
+using `-soname` or `./configure --soname` for this release.
+
 ## [4.19.0] - (? 2026 - [4.19.0 changes])
 - Report an error if a database is opened with an invalid hexkey URI parameter 
 - Include provider error code in KDF error message
@@ -366,6 +405,8 @@ Notable changes to this project are documented in this file.
 ### Security
 - Change KDF iteration length from 4,000 to 64,000
 
+[5.0.0-beta]: https://github.com/sqlcipher/sqlcipher/tree/v5.0.0-beta
+[5.0.0-beta changes]: https://github.com/sqlcipher/sqlcipher/compare/v4.19.0...v5.0.0-beta
 [4.19.0]: https://github.com/sqlcipher/sqlcipher/tree/v4.19.0
 [4.19.0 changes]: https://github.com/sqlcipher/sqlcipher/compare/v4.18.0...v4.19.0
 [4.18.0]: https://github.com/sqlcipher/sqlcipher/tree/v4.18.0

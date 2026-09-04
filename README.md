@@ -15,7 +15,7 @@ SQLCipher is maintained by Zetetic, LLC, and additional information and document
 
 - Fast performance with as little as 5-15% overhead for encryption on many operations
 - 100% of data in the database file is encrypted
-- Good security practices (CBC mode, HMAC, key derivation)
+- Good security practices (AEAD AES-256-GCM encryption, key derivation)
 - Zero-configuration and application level cryptography
 - Support for multiple cryptographic providers
 
@@ -33,16 +33,21 @@ The SQLCipher team welcomes contributions to the core library. All contributions
 
 Building SQLCipher is similar to compiling a regular version of SQLite from source, with a few small exceptions. You must:
 
- 1. define `SQLITE_HAS_CODEC`
- 2. define `SQLITE_TEMP_STORE=2` or `SQLITE_TEMP_STORE=3` (or use `configure`'s --with-tempstore=yes option)
- 3. define `SQLITE_EXTRA_INIT=sqlcipher_extra_init` and `SQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown`
- 4. define `SQLITE_THREADSAFE` to `1` or `2` (enabled automatically by `configure`)
- 2. compile and link with a supported cryptographic provider (OpenSSL, LibTomCrypt, CommonCrypto/Security.framework, or NSS)
- 
+ 1. define `SQLITE_TEMP_STORE=2` or `SQLITE_TEMP_STORE=3` (or use `configure`'s --with-tempstore=yes option)
+ 2. define `SQLITE_EXTRA_INIT=sqlcipher_extra_init` and `SQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown`
+ 3. define `SQLITE_THREADSAFE` to `1` or `2` (enabled automatically by `configure`)
+ 4. define `SQLITE_USE_URI=1`
+ 5. define `SQLITE_DIRECT_OVERFLOW_READ=0`
+ 6. compile and link with a supported cryptographic provider (OpenSSL or LibTomCrypt)
+
+SQLCipher is included in the build by default, so `SQLITE_HAS_CODEC` is no longer required. To build a plain SQLite library without SQLCipher, define `OMIT_SQLCIPHER` instead.
+
+As of 5.0 the default encryption is AEAD (AES-256-GCM), which requires a cryptographic provider that supports GCM. OpenSSL and LibTomCrypt both provide it. The CommonCrypto provider is deprecated, does not support GCM, and is only available behind a special override define.
+
 The following examples demonstrate use of OpenSSL, which is a readily available provider on most Unix-like systems. Note that, in this example, `--with-tempstore=yes` is setting `SQLITE_TEMP_STORE=2` for the build, and `SQLITE_THREADSAFE` has a default value of `1`.
 
 ```
-$ ./configure --with-tempstore=yes CFLAGS="-DSQLITE_HAS_CODEC -DSQLITE_EXTRA_INIT=sqlcipher_extra_init -DSQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown" \
+$ ./configure --with-tempstore=yes CFLAGS="-DSQLITE_USE_URI=1 -DSQLITE_DIRECT_OVERFLOW_READ=0 -DSQLITE_EXTRA_INIT=sqlcipher_extra_init -DSQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown" \
 	LDFLAGS="-lcrypto"
 $ make
 ```
@@ -56,7 +61,7 @@ As a result, the SQLCipher package includes it's own independent tests that exer
 To run SQLCipher specific tests, configure as described here and run the following to execute the tests and receive a report of the results:
 
 ```
-$ ./configure --with-tempstore=yes --enable-fts5 CFLAGS="-DSQLITE_HAS_CODEC -DSQLITE_EXTRA_INIT=sqlcipher_extra_init -DSQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown -DSQLCIPHER_TEST" \
+$ ./configure --with-tempstore=yes --enable-fts5 CFLAGS="-DSQLITE_USE_URI=1 -DSQLITE_DIRECT_OVERFLOW_READ=0 -DSQLITE_EXTRA_INIT=sqlcipher_extra_init -DSQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown -DSQLCIPHER_TEST" \
 	LDFLAGS="-lcrypto"
 $ make testfixture
 $ ./testfixture test/sqlcipher.test

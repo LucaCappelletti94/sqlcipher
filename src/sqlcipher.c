@@ -118,7 +118,7 @@ u32 sqlcipher_pager_wal_salt(Pager *pPager, int);
 #define CIPHER_STR(s) #s
 
 #ifndef CIPHER_VERSION_NUMBER
-#define CIPHER_VERSION_NUMBER 4.19.0
+#define CIPHER_VERSION_NUMBER 5.0.0-beta
 #endif
 
 #ifndef CIPHER_VERSION_BUILD
