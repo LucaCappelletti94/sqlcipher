@@ -2786,7 +2786,17 @@ static int codec_set_btree_to_codec_pagesize(sqlite3 *db, Db *pDb, codec_ctx *ct
   /* before forcing the page size we need to unset the BTS_PAGESIZE_FIXED flag, else  
      sqliteBtreeSetPageSize will block the change  */
   pDb->pBt->pBt->btsFlags &= ~BTS_PAGESIZE_FIXED;
+
+  sqlite3BtreeEnter(pDb->pBt);
+  /* sqlite3BtreeSetPageSize never lowers the reserve, and with page 1 unloaded lockBtree takes it from the header anyway */
+  if(pDb->pBt->pBt->pPage1 == NULL) pDb->pBt->pBt->usableSize = pDb->pBt->pBt->pageSize;
   rc = sqlite3BtreeSetPageSize(pDb->pBt, ctx->page_sz, ctx->reserve_sz, 0);
+  /* the codec encrypts ctx->page_sz bytes, so a page SQLite enlarged for a reserve above 32 bytes is unreadable */
+  if(rc == SQLITE_OK && sqlite3BtreeGetPageSize(pDb->pBt) != ctx->page_sz) {
+    sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "codec_set_btree_to_codec_pagesize: btree page size %d does not match cipher_page_size %d with reserve %d", sqlite3BtreeGetPageSize(pDb->pBt), ctx->page_sz, ctx->reserve_sz);
+    rc = SQLITE_ERROR;
+  }
+  sqlite3BtreeLeave(pDb->pBt);
 
   sqlcipher_log(SQLCIPHER_LOG_DEBUG, SQLCIPHER_LOG_CORE, "codec_set_btree_to_codec_pagesize: sqlite3BtreeSetPageSize returned %d", rc);
 
@@ -3746,7 +3756,7 @@ int sqlcipherCodecAttach(sqlite3* db, int nDb, const void *zKey, int nKey) {
   sqlcipher_log(SQLCIPHER_LOG_DEBUG, SQLCIPHER_LOG_CORE, "%s: calling sqlcipherPagerSetCodec()", __func__);
   sqlcipherPagerSetCodec(pPager, sqlite3Codec, NULL, sqlite3FreeCodecArg, (void *) ctx);
 
-  codec_set_btree_to_codec_pagesize(db, pDb, ctx);
+  if(codec_set_btree_to_codec_pagesize(db, pDb, ctx) != SQLITE_OK) sqlcipher_codec_ctx_set_error(ctx, SQLITE_ERROR);
 
   /* force secure delete. This has the benefit of wiping internal data when deleted
      and also ensures that all pages are written to disk (i.e. not skipped by

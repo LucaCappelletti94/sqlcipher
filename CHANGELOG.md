@@ -11,6 +11,7 @@ Notable changes to this project are documented in this file.
 - Avoid leaking partially initialized context if an initialization error occurs
 - Fix error reporting for failed rekey operations
 - Improve consistency of internal memory utilization tracking
+- Fix unreadable databases and out of bounds page writes when `PRAGMA cipher_page_size = 512` follows the key
 
 ## [4.18.0] - (August 2026 - [4.18.0 changes])
 - Update baseline to SQLite 3.53.4

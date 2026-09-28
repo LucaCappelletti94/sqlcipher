@@ -231,6 +231,59 @@ do_test verify-pragma-page-size-plaintext {
 db close
 file delete -force test.db
 
+# verify that 512-byte pages set after the key with hmac
+# turned off are written as 512-byte pages and read back
+do_test verify-pragma-cipher-page-size-512-nohmac-after-key {
+    sqlite_orig db test.db
+    execsql {
+        PRAGMA key = 'test';
+        PRAGMA cipher_use_hmac = OFF;
+        PRAGMA cipher_page_size = 512;
+        CREATE TABLE t1(a);
+        INSERT INTO t1 VALUES (randomblob(2000));
+    }
+    db close
+    set size [file size test.db]
+    sqlite_orig db test.db
+    list $size [execsql {
+        PRAGMA key = 'test';
+        PRAGMA cipher_use_hmac = OFF;
+        PRAGMA cipher_page_size = 512;
+        PRAGMA page_count;
+        SELECT length(a) FROM t1;
+    }]
+} {3072 {ok 6 2000}}
+db close
+file delete -force test.db
+
+# verify that 512-byte pages with hmac, which leave less than
+# the 480 usable bytes SQLite requires, put the database in an
+# error state instead of writing pages the codec cannot read
+do_test verify-pragma-cipher-page-size-512-hmac {
+    sqlite_orig db test.db
+    execsql {
+        PRAGMA key = 'test';
+        PRAGMA cipher_page_size = 512;
+    }
+    list [catch {execsql {CREATE TABLE t1(a);}} msg] $msg [file size test.db]
+} {1 {attempt to write a readonly database} 0}
+db close
+file delete -force test.db
+
+# verify that a default page size of 512 with hmac puts the
+# database in an error state when the key is set
+do_test verify-pragma-cipher-default-page-size-512-hmac {
+    sqlite_orig db test.db
+    execsql {
+        PRAGMA cipher_default_page_size = 512;
+        PRAGMA key = 'test';
+        PRAGMA cipher_default_page_size = 4096;
+    }
+    list [catch {execsql {CREATE TABLE t1(a);}} msg] $msg [file size test.db]
+} {1 {attempt to write a readonly database} 0}
+db close
+file delete -force test.db
+
 # verify setting cipher_store_pass before key
 # does not cause segfault
 do_test verify-cipher-store-pass-before-key-does-not-segfault {
