@@ -365,4 +365,103 @@ do_test rekey-readonly {
 db close
 file delete -force test.db
 
+proc rekey_flip_byte {file off} {
+  set fd [open $file r+]
+  fconfigure $fd -translation binary
+  seek $fd $off
+  binary scan [read $fd 1] c v
+  seek $fd $off
+  puts -nonewline $fd [binary format c [expr {$v ^ 1}]]
+  close $fd
+}
+
+# a page cached correct before an on-disk tamper must not be re-encrypted
+# under the new key without rekey re-authenticating it against the old one
+do_test rekey-detects-page-tampered-while-cached {
+  sqlite_orig db test.db
+
+  execsql {
+    PRAGMA key = 'test123';
+    CREATE TABLE t1(a,b);
+    BEGIN;
+  }
+  for {set i 1} {$i<=2000} {incr i} {
+    execsql "INSERT INTO t1 VALUES($i, 'row value number $i with padding to spread rows across pages');"
+  }
+  execsql { COMMIT; }
+
+  # touch every page of t1 so this connection's pager cache holds
+  # the correct content for all of them before the file is tampered
+  execsql { SELECT count(*), sum(length(b)) FROM t1; }
+
+  set pgsz [lindex [execsql {PRAGMA cipher_page_size;}] 0]
+  set pgcount [lindex [execsql {PRAGMA page_count;}] 0]
+  set off [expr {($pgcount-1)*$pgsz + 100}]
+
+  rekey_flip_byte test.db $off
+
+  set rc {}
+  lappend rc [catchsql { PRAGMA rekey = 'test321'; }]
+  db close
+
+  # rekey must not have silently re-encrypted the tampered page,
+  # so the new key must not open the database
+  sqlite_orig db test.db
+  lappend rc [catchsql { PRAGMA key = 'test321'; SELECT count(*) FROM t1; }]
+  db close
+
+  # rekey must not have swapped in the new key despite the failed
+  # commit, so the old key must still open the database
+  sqlite_orig db test.db
+  lappend rc [catchsql { PRAGMA key = 'test123'; SELECT name FROM sqlite_schema; }]
+  db close
+
+  # undo the tamper and confirm the rolled-back file and old key
+  # are otherwise intact
+  rekey_flip_byte test.db $off
+
+  sqlite_orig db test.db
+  lappend rc [catchsql {
+    PRAGMA key = 'test123';
+    SELECT count(*) FROM t1;
+    PRAGMA integrity_check;
+    PRAGMA cipher_integrity_check;
+  }]
+  set rc
+} {{1 {An error occurred with PRAGMA key or rekey. PRAGMA key requires a key of one or more characters. PRAGMA rekey can only be run on an existing encrypted database. Use sqlcipher_export() and ATTACH to convert encrypted/plaintext databases.}} {1 {file is not a database}} {0 {ok t1}} {0 {ok 2000 ok}}}
+db close
+file delete -force test.db
+
+# the write ctx already holds the abandoned attempt's key by the time
+# a rekey failure is detected, and every ordinary write goes through
+# it, so a failed rekey must restore the write context to the current key
+do_test rekey-restores-write-key-after-failure {
+  sqlite_orig db test.db
+
+  set rc {}
+  execsql {
+    PRAGMA key = 'test';
+    CREATE TABLE t1(a,b);
+    INSERT INTO t1 VALUES(1,'row1');
+  }
+
+  execsql { PRAGMA cipher_test_on = fail_rekey; }
+  lappend rc [catchsql { PRAGMA cache_size = 0; PRAGMA rekey = 'test123'; }]
+
+  # write more data on the same connection right after the failure
+  lappend rc [catchsql { INSERT INTO t1 VALUES(2,'row2'); SELECT * FROM t1; }]
+  execsql { PRAGMA cipher_test_off = fail_rekey; }
+  db close
+
+  sqlite_orig db test.db
+  lappend rc [catchsql {
+    PRAGMA key = 'test';
+    SELECT * FROM t1;
+    PRAGMA integrity_check;
+  }]
+  set rc
+} {{1 {An error occurred with PRAGMA key or rekey. PRAGMA key requires a key of one or more characters. PRAGMA rekey can only be run on an existing encrypted database. Use sqlcipher_export() and ATTACH to convert encrypted/plaintext databases.}} {0 {1 row1 2 row2}} {0 {ok 1 row1 2 row2 ok}}}
+db close
+file delete -force test.db
+
 finish_test
