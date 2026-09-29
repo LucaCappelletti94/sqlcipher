@@ -3882,6 +3882,9 @@ int sqlite3_rekey_v2(sqlite3 *db, const char *zDb, const void *pKey, int nKey) {
       ** 3. If that goes ok then commit and put ctx->rekey into ctx->key
       **    note: don't deallocate rekey since it may be used in a subsequent iteration 
       */
+      /* drop cached pages (when no transaction is open) so every page
+      ** below is freshly read and HMAC-verified, not served stale */
+      sqlite3BtreeClearCache(pDb->pBt);
       if((rc = sqlite3BtreeBeginTrans(pDb->pBt, 1, 0)) != SQLITE_OK) { /* begin write transaction */
         sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: failed to begin write transaction %d", __func__, rc);
         goto cleanup;
@@ -3910,13 +3913,17 @@ int sqlite3_rekey_v2(sqlite3 *db, const char *zDb, const void *pKey, int nKey) {
         } 
       }
 
-      /* if commit was successful commit and copy the rekey data to current key, else rollback to release locks */
+      /* on success promote the write key; on failure restore it first so
+      ** a failed rekey never leaves this connection writing under it */
       if(rc == SQLITE_OK) { 
         sqlcipher_log(SQLCIPHER_LOG_DEBUG, SQLCIPHER_LOG_CORE, "sqlite3_rekey_v2: committing");
-        sqlite3BtreeCommit(pDb->pBt);
+        rc = sqlite3BtreeCommit(pDb->pBt);
+      }
+      if(rc == SQLITE_OK) {
         sqlcipher_codec_key_copy(ctx, CIPHER_WRITE_CTX);
       } else {
-        sqlcipher_log(SQLCIPHER_LOG_DEBUG, SQLCIPHER_LOG_CORE, "sqlite3_rekey_v2: rollback");
+        sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "sqlite3_rekey_v2: error %d occurred, rolling back", rc);
+        sqlcipher_codec_key_copy(ctx, CIPHER_READ_CTX);
         sqlite3BtreeRollback(pDb->pBt, SQLITE_ABORT_ROLLBACK, 0);
       }
 
