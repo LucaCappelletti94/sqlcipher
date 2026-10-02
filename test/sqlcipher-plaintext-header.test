@@ -189,6 +189,64 @@ do_test test-invalid-plaintext-header-sizes {
 db close
 file delete -force test.db
 
+# verify that a cipher_plaintext_header_size that stops fitting the
+# first page after a later page size or reserve change is refused
+# 1. cipher_compatibility shrinks the page below the header
+# 2. cipher_page_size shrinks the page to the header size
+# 3. cipher_use_hmac grows the reserve over the header
+do_test test-plaintext-header-size-exceeds-later-page-settings {
+  set rc {}
+  sqlite_orig db test.db
+  lappend rc [catchsql "
+    PRAGMA key = $hexkeyspec;
+    PRAGMA cipher_plaintext_header_size = 4016;
+    PRAGMA cipher_compatibility = 3;
+    CREATE TABLE t1(a,b);
+  "]
+  db close
+  file delete -force test.db
+  sqlite_orig db test.db
+  lappend rc [catchsql "
+    PRAGMA key = $hexkeyspec;
+    PRAGMA cipher_plaintext_header_size = 1024;
+    PRAGMA cipher_page_size = 1024;
+    CREATE TABLE t1(a,b);
+  "]
+  db close
+  file delete -force test.db
+  sqlite_orig db test.db
+  lappend rc [catchsql "
+    PRAGMA key = $hexkeyspec;
+    PRAGMA cipher_use_hmac = OFF;
+    PRAGMA cipher_plaintext_header_size = 4080;
+    PRAGMA cipher_use_hmac = ON;
+    CREATE TABLE t1(a,b);
+  "]
+} {{1 {out of memory}} {1 {out of memory}} {1 {out of memory}}}
+db close
+file delete -force test.db
+
+# verify that cipher_integrity_check refuses a plaintext header
+# larger than the first page of the settings in force
+do_test test-plaintext-header-size-exceeds-page-integrity-check {
+  sqlite_orig db test.db
+  execsql "
+    PRAGMA key = $hexkeyspec;
+    CREATE TABLE t1(a,b);
+    INSERT INTO t1(a,b) VALUES (1,2);
+  "
+  db close
+  sqlite_orig db test.db
+  execsql "
+    PRAGMA key = $hexkeyspec;
+    PRAGMA cipher_plaintext_header_size = 4016;
+    PRAGMA cipher_compatibility = 3;
+    PRAGMA cipher_integrity_check;
+  "
+} {ok {invalid plaintext header size}}
+db close
+file delete -force test.db
+
 # verify that a valid cipher_plaintext_header_size leaves the
 # start of the database unencrypted, i.e. "SQLite format 3\0"
 do_test test-valid-plaintext-header-size {
