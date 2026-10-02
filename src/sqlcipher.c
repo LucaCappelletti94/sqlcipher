@@ -2172,13 +2172,13 @@ static int sqlcipher_codec_ctx_migrate(codec_ctx *ctx) {
   if(pass_sz < 1 || !ctx->read_ctx->pass) {
     sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: underived key material is not available. PRAGMA cipher_migrate MUST be run as the first operation after keying", __func__);
     rc = SQLITE_MISUSE;
-    goto handle_error;
+    goto cleanup;
   }
 
   if(!(pass = sqlcipher_malloc(pass_sz+1))) {
     sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: failed to allocate key material storage", __func__);
     rc = SQLITE_NOMEM;
-    goto handle_error;
+    goto cleanup;
   }
   memset(pass, 0, pass_sz+1);
   memcpy(pass, ctx->read_ctx->pass, pass_sz);
@@ -2193,7 +2193,7 @@ static int sqlcipher_codec_ctx_migrate(codec_ctx *ctx) {
   for(i = 3; i > 0; i--) {
     if(!(pragma_compat = sqlite3_mprintf("PRAGMA cipher_compatibility = %d;", i))) {
       sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "%s: failed to format pragma_compat", __func__);
-      goto handle_error;
+      goto cleanup;
     }
 
     rc = sqlcipher_check_connection(db_filename, pass, pass_sz, pragma_compat, &user_version, &journal_mode);
@@ -2208,8 +2208,10 @@ static int sqlcipher_codec_ctx_migrate(codec_ctx *ctx) {
   /* if we exit the loop normally we failed to determine the version, this is an error */
   sqlcipher_log(SQLCIPHER_LOG_ERROR, SQLCIPHER_LOG_CORE, "sqlcipher_codec_ctx_migrate: unable to determine format version for upgrade: this may indicate custom settings were used ");
   rc = SQLITE_NOTADB;
-  goto handle_error;
+  goto cleanup;
 
+/* failures before this point leave the connection untouched and exit through cleanup,
+ * failures after it go through handle_error and set the deferred error */
 migrate:
 
   if(!(temp = sqlite3_mprintf("%s-migrated", db_filename))) {
